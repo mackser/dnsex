@@ -1,31 +1,28 @@
-use hickory_server::ServerFuture;
-use std::net::SocketAddr;
-use tokio::net::{TcpListener, UdpSocket};
-mod error;
+use clap::Parser;
 use error::DnsexError;
+use server::Server;
 
+mod error;
 mod handler;
-use handler::DnsHandler;
+mod server;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about = "DnsEx - Created by coigner <coigner@tuta.com>", long_about = None)]
+struct DnsexOptions {
+    #[arg(short, long, default_value_t = 8053)]
+    port: u16,
+}
 
 #[tokio::main]
-async fn main() -> Result<(), DnsexError>{
+async fn main() -> Result<(), DnsexError> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let handler = DnsHandler;
-    let mut server = ServerFuture::new(handler);
-
-    let addr: SocketAddr = "0.0.0.0:8053".parse()?;
-
-    let udp_socket = UdpSocket::bind(&addr).await?;
-    let tcp_listener = TcpListener::bind(&addr).await?;
-
-    tracing::info!("DNS server started on {}", addr);
-
-    server.register_socket(udp_socket);
-    server.register_listener(tcp_listener, std::time::Duration::from_secs(30));
-    server.block_until_done().await?;
+    let opts = DnsexOptions::parse();
+    let addr = "0.0.0.0";
+    let server = Server::new(addr, opts.port);
+    server.start().await?;
 
     Ok(())
 }

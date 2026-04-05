@@ -61,19 +61,20 @@ async fn main() -> Result<(), DnsexError> {
             message,
             file,
         } => {
-            let payload: Vec<u8> = if let Some(msg) = message {
-                msg.into_bytes()
+            let payload: String = if let Some(msg) = message {
+                msg
             } else if let Some(path) = file {
-                fs::read(&path).await?
+                fs::read_to_string(&path).await?
             } else {
-                let mut buf = Vec::new();
+                let mut buf = String::new();
                 let mut stdin = io::stdin();
-                stdin.read_to_end(&mut buf).await?;
+                stdin.read_to_string(&mut buf).await?;
 
                 buf
             };
 
-            // Todo: send loop
+            let client = Client::new(domain);
+            let _ = client.send(payload);
         }
     };
 

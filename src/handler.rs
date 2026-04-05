@@ -1,0 +1,47 @@
+use async_trait::async_trait;
+use hickory_proto::op::ResponseCode;
+use hickory_proto::rr::{RData, Record, RecordType, rdata::A};
+use hickory_server::{
+    authority::MessageResponseBuilder,
+    server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
+};
+
+#[derive(Clone, Debug)]
+pub struct DnsHandler;
+
+#[async_trait]
+impl RequestHandler for DnsHandler {
+    async fn handle_request<R: ResponseHandler>(
+        &self,
+        request: &Request,
+        mut response_handle: R,
+    ) -> ResponseInfo {
+        let query = request.query();
+        let qname = query.name();
+        let record_type = query.query_type();
+
+        tracing::info!("Received query for: {} (Type: {})", qname, record_type);
+
+        let builder = MessageResponseBuilder::from_message_request(request);
+        let mut header = hickory_proto::op::Header::response_from_request(request.header());
+
+        if qname.to_string() == "test.local." && record_type == RecordType::A {
+            let rdata = RData::A(A::new(1, 2, 3, 4));
+            let record = Record::from_rdata(qname.into(), 60, rdata);
+
+            let response = builder.build(
+                header,
+                vec![&record].into_iter(),
+                vec![].into_iter(),
+                vec![].into_iter(),
+                vec![].into_iter(),
+            );
+
+            return response_handle.send_response(response).await.unwrap();
+        }
+
+        header.set_response_code(ResponseCode::NXDomain);
+        let response = builder.build_no_records(header);
+        response_handle.send_response(response).await.unwrap()
+    }
+}

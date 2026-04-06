@@ -5,6 +5,7 @@ use tokio::net::{TcpListener, UdpSocket};
 use crate::error::DnsexError;
 use crate::handler::DnsHandler;
 
+#[derive(Debug, Clone)]
 pub struct Server {
     pub domain: String,
     pub addr: String,
@@ -24,14 +25,17 @@ impl Server {
     }
 
     pub async fn start(&self) -> Result<(), DnsexError> {
-        let handler = DnsHandler;
+        let handler = DnsHandler {
+            server: self.clone(),
+        };
+
         let mut server = ServerFuture::new(handler);
 
         let addr: SocketAddr = format!("{}:{}", self.addr, self.port).parse()?;
         let udp_socket = UdpSocket::bind(&addr).await?;
         let tcp_listener = TcpListener::bind(&addr).await?;
 
-        tracing::info!("DNS server started on {}", addr);
+        println!("DNS server started on {}", addr);
 
         server.register_socket(udp_socket);
         server.register_listener(tcp_listener, std::time::Duration::from_secs(30));

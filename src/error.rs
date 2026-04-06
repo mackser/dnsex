@@ -1,5 +1,4 @@
 use thiserror::Error;
-use tracing::error;
 
 #[derive(Debug, Error)]
 pub enum DnsexError {
@@ -10,5 +9,8 @@ pub enum DnsexError {
     AddrParseError(#[from] std::net::AddrParseError),
 
     #[error("Proto Error: {0}")]
-    ProtoError(#[from] hickory_proto::error::ProtoError)
+    ProtoError(#[from] hickory_proto::error::ProtoError),
+        
+    #[error("Client Error: {0}")]
+    ClientError(#[from] hickory_client::error::ClientError)
 }

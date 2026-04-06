@@ -39,15 +39,14 @@ enum Commands {
 
         #[arg(short, long)]
         file: Option<String>,
+
+        #[arg(short, long, default_value_t = 8053)]
+        port: u16,
     },
 }
 
 #[tokio::main]
 async fn main() -> Result<(), DnsexError> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
-
     let cli = Cli::parse();
 
     match cli.command {
@@ -60,6 +59,7 @@ async fn main() -> Result<(), DnsexError> {
             domain,
             message,
             file,
+            port,
         } => {
             let payload: String = if let Some(msg) = message {
                 msg
@@ -73,8 +73,8 @@ async fn main() -> Result<(), DnsexError> {
                 buf
             };
 
-            let client = Client::new(domain);
-            let _ = client.send(payload);
+            let client = Client::new(domain, port);
+            let _ = client.send_payload(payload.as_bytes()).await?;
         }
     };
 

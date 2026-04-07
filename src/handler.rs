@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use hickory_proto::op::ResponseCode;
-use hickory_proto::rr::{RData, Record, RecordType, rdata::A, rdata::TXT};
+use hickory_proto::rr::{RData, Record, RecordType, rdata::TXT};
 use hickory_server::{
     authority::MessageResponseBuilder,
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
@@ -54,7 +54,7 @@ impl RequestHandler for DnsHandler {
     ) -> ResponseInfo {
         let query = request.query();
         let qname = query.name();
-        let qname_str = qname.to_string();
+        let qname_str = qname.to_string().to_lowercase();
         let record_type = query.query_type();
 
         let builder = MessageResponseBuilder::from_message_request(request);
@@ -77,25 +77,27 @@ impl RequestHandler for DnsHandler {
             };
         }
 
-        if let Some(chunk) = self.extract_chunk(&qname_str) {
-            let data = String::from_utf8_lossy(&chunk.data);
-            print!("{}", data);
-            let _ = std::io::stdout().flush();
+        if record_type == RecordType::TXT {
+            if let Some(chunk) = self.extract_chunk(&qname_str) {
+                let data = String::from_utf8_lossy(&chunk.data);
+                print!("{}", data);
+                let _ = std::io::stdout().flush();
 
-            let txt: Vec<String> = vec![chunk.seq.to_string()];
-            let rdata = RData::TXT(TXT::new(txt));
-            let record = Record::from_rdata(qname.into(), 60, rdata);
-            header.set_response_code(ResponseCode::NoError);
+                let txt: Vec<String> = vec![chunk.seq.to_string()];
+                let rdata = RData::TXT(TXT::new(txt));
+                let record = Record::from_rdata(qname.into(), 60, rdata);
+                header.set_response_code(ResponseCode::NoError);
 
-            let response = builder.build(
-                header,
-                vec![&record].into_iter(),
-                vec![].into_iter(),
-                vec![].into_iter(),
-                vec![].into_iter(),
-            );
+                let response = builder.build(
+                    header,
+                    vec![&record].into_iter(),
+                    vec![].into_iter(),
+                    vec![].into_iter(),
+                    vec![].into_iter(),
+                );
 
-            return response_handle.send_response(response).await.unwrap();
+                return response_handle.send_response(response).await.unwrap();
+            }
         }
 
         header.set_response_code(ResponseCode::NXDomain);

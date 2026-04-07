@@ -5,9 +5,16 @@ use hickory_server::{
     authority::MessageResponseBuilder,
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
 };
-use std::sync::Arc;
 
 use crate::server::Server;
+use std::sync::Arc;
+use std::io::Write;
+
+#[derive(Clone, Debug)]
+pub struct Chunk {
+    pub data: Vec<u8>,
+    pub seq: usize,
+}
 
 #[derive(Clone, Debug)]
 pub struct DnsHandler {
@@ -15,6 +22,18 @@ pub struct DnsHandler {
 }
 
 impl DnsHandler {
+    fn extract_chunk(&self, qname: &str) -> Chunk {
+        let payload = self.extract_payload(qname);
+        let parts: Vec<_> = payload.split('.').collect();
+        let decoded_data = hex::decode(parts[0]).unwrap_or_default();
+        let seq = parts[1].parse::<usize>().unwrap();
+
+        Chunk { 
+            data: decoded_data,
+            seq: seq
+        }
+    }
+
     fn extract_payload<'a>(&self, qname: &'a str) -> &'a str {
         let domain: &str = self.server.domain.as_str();
 
@@ -40,8 +59,10 @@ impl RequestHandler for DnsHandler {
         let qname = query.name().to_string();
         let record_type = query.query_type();
 
-        let payload = self.extract_payload(&qname);
-        println!("{}", payload);
+        let payload = self.extract_chunk(&qname);
+        let data = String::from_utf8(payload.data).unwrap();
+        print!("{}", data);
+        let _ = std::io::stdout().flush();
 
         let builder = MessageResponseBuilder::from_message_request(request);
         let mut header = hickory_proto::op::Header::response_from_request(request.header());

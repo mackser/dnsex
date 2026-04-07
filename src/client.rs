@@ -42,15 +42,15 @@ impl Client {
             println!("Sending chunk {}/{}: {}", seq + 1, total_chunks, fqdn);
 
             let response = client
-                .query(domain_name, DNSClass::IN, RecordType::A)
+                .query(domain_name, DNSClass::IN, RecordType::TXT)
                 .await?;
 
             if response.answers().is_empty() {
                 println!("Response code: {}", response.response_code());
             } else {
                 for answer in response.answers() {
-                    if let Some(RData::A(ip)) = answer.data() {
-                        println!("{}", ip);
+                    if let Some(RData::TXT(txt)) = answer.data() {
+                        println!("{}", txt);
                     }
                 }
             }

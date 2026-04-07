@@ -1,14 +1,14 @@
 use async_trait::async_trait;
 use hickory_proto::op::ResponseCode;
-use hickory_proto::rr::{RData, Record, RecordType, rdata::A};
+use hickory_proto::rr::{RData, Record, RecordType, rdata::A, rdata::TXT};
 use hickory_server::{
     authority::MessageResponseBuilder,
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
 };
 
 use crate::server::Server;
-use std::sync::Arc;
 use std::io::Write;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct Chunk {
@@ -22,29 +22,26 @@ pub struct DnsHandler {
 }
 
 impl DnsHandler {
-    fn extract_chunk(&self, qname: &str) -> Chunk {
-        let payload = self.extract_payload(qname);
-        let parts: Vec<_> = payload.split('.').collect();
-        let decoded_data = hex::decode(parts[0]).unwrap_or_default();
-        let seq = parts[1].parse::<usize>().unwrap();
-
-        Chunk { 
-            data: decoded_data,
-            seq: seq
-        }
-    }
-
-    fn extract_payload<'a>(&self, qname: &'a str) -> &'a str {
-        let domain: &str = self.server.domain.as_str();
-
-        if let Some(idx) = qname.find(domain) {
-            if idx == 0 || qname.as_bytes().get(idx.wrapping_sub(1)) == Some(&b'.') {
-                let end = idx.checked_sub(1).unwrap_or(0);
-                return &qname[..end];
-            }
+    fn extract_chunk(&self, qname: &str) -> Option<Chunk> {
+        let qname = qname.to_lowercase();
+        let mut base_domain = self.server.domain.to_lowercase();
+        if !base_domain.ends_with('.') {
+            base_domain.push('.');
         }
 
-        ""
+        let remainder = qname.strip_suffix(&base_domain)?.trim_end_matches('.');
+        let mut parts = remainder.split('.');
+        let hex_data = parts.next()?;
+        let seq_str = parts.next()?;
+
+        if parts.next().is_some() {
+            return None;
+        }
+
+        let seq = seq_str.parse::<usize>().ok()?;
+        let data = hex::decode(hex_data).ok()?;
+
+        Some(Chunk { seq, data })
     }
 }
 
@@ -56,34 +53,53 @@ impl RequestHandler for DnsHandler {
         mut response_handle: R,
     ) -> ResponseInfo {
         let query = request.query();
-        let qname = query.name().to_string();
+        let qname = query.name();
+        let qname_str = qname.to_string();
         let record_type = query.query_type();
-
-        let payload = self.extract_chunk(&qname);
-        let data = String::from_utf8(payload.data).unwrap();
-        print!("{}", data);
-        let _ = std::io::stdout().flush();
 
         let builder = MessageResponseBuilder::from_message_request(request);
         let mut header = hickory_proto::op::Header::response_from_request(request.header());
 
-        // if qname.to_string() == "test.local." && record_type == RecordType::A {
-        //     let rdata = RData::A(A::new(1, 2, 3, 4));
-        //     let record = Record::from_rdata(qname.into(), 60, rdata);
+        let expected_suffix = format!("{}.", self.server.domain);
+        if !qname_str.ends_with(&expected_suffix) {
+            header.set_response_code(ResponseCode::Refused);
+            let response = builder.build_no_records(header);
 
-        //     let response = builder.build(
-        //         header,
-        //         vec![&record].into_iter(),
-        //         vec![].into_iter(),
-        //         vec![].into_iter(),
-        //         vec![].into_iter(),
-        //     );
+            match response_handle.send_response(response).await {
+                Ok(info) => return info,
+                Err(e) => {
+                    eprintln!("Failed to send DNS response: {}", e);
 
-        //     return response_handle.send_response(response).await.unwrap();
-        // }
+                    let mut header = hickory_proto::op::Header::new();
+                    header.set_response_code(ResponseCode::ServFail);
+                    return header.into();
+                }
+            };
+        }
+
+        if let Some(chunk) = self.extract_chunk(&qname_str) {
+            let data = String::from_utf8_lossy(&chunk.data);
+            print!("{}", data);
+            let _ = std::io::stdout().flush();
+
+            let txt: Vec<String> = vec![chunk.seq.to_string()];
+            let rdata = RData::TXT(TXT::new(txt));
+            let record = Record::from_rdata(qname.into(), 60, rdata);
+            header.set_response_code(ResponseCode::NoError);
+
+            let response = builder.build(
+                header,
+                vec![&record].into_iter(),
+                vec![].into_iter(),
+                vec![].into_iter(),
+                vec![].into_iter(),
+            );
+
+            return response_handle.send_response(response).await.unwrap();
+        }
 
         header.set_response_code(ResponseCode::NXDomain);
         let response = builder.build_no_records(header);
-        response_handle.send_response(response).await.unwrap()
+        return response_handle.send_response(response).await.unwrap();
     }
 }

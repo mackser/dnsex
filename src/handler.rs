@@ -5,20 +5,41 @@ use hickory_server::{
     authority::MessageResponseBuilder,
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
 };
+use std::collections::HashMap;
 
+use crate::error::DnsexError;
 use crate::server::Server;
-use std::io::Write;
 use std::sync::Arc;
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
+
+#[derive(Clone, Debug)]
+pub struct Transfer {
+    filename: String,
+    total_chunks: usize,
+    chunks: HashMap<usize, Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ChunkFlag {
+    Init,
+    Data,
+    Fin,
+}
 
 #[derive(Clone, Debug)]
 pub struct Chunk {
     pub data: Vec<u8>,
     pub seq: usize,
+    pub id: String,
+    pub flag: ChunkFlag,
 }
 
 #[derive(Clone, Debug)]
 pub struct DnsHandler {
     pub server: Arc<Server>,
+    pub transfers: Arc<Mutex<HashMap<String, Transfer>>>,
 }
 
 impl DnsHandler {
@@ -33,6 +54,8 @@ impl DnsHandler {
         let mut parts = remainder.split('.');
         let hex_data = parts.next()?;
         let seq_str = parts.next()?;
+        let id = parts.next()?;
+        let flag_str = parts.next()?;
 
         if parts.next().is_some() {
             return None;
@@ -40,8 +63,19 @@ impl DnsHandler {
 
         let seq = seq_str.parse::<usize>().ok()?;
         let data = hex::decode(hex_data).ok()?;
+        let flag = match flag_str {
+            "i" => ChunkFlag::Init,
+            "d" => ChunkFlag::Data,
+            "f" => ChunkFlag::Fin,
+            _ => return None,
+        };
 
-        Some(Chunk { seq, data })
+        Some(Chunk {
+            seq,
+            data,
+            id: id.to_string(),
+            flag,
+        })
     }
 }
 
@@ -79,11 +113,57 @@ impl RequestHandler for DnsHandler {
 
         if record_type == RecordType::TXT {
             if let Some(chunk) = self.extract_chunk(&qname_str) {
-                let data = String::from_utf8_lossy(&chunk.data);
-                print!("{}", data);
-                let _ = std::io::stdout().flush();
+                match chunk.flag {
+                    ChunkFlag::Init => {
+                        let filename = String::from_utf8_lossy(&chunk.data);
+                        let transfer = Transfer {
+                            filename: filename.to_string(),
+                            total_chunks: chunk.seq,
+                            chunks: HashMap::new(),
+                        };
+
+                        let mut active_transfers = self.transfers.lock().await;
+                        active_transfers.insert(chunk.id.clone(), transfer);
+                        println!("{}: Init", filename);
+                    }
+                    ChunkFlag::Data => {
+                        let mut active_transfers = self.transfers.lock().await;
+                        if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
+                            transfer.chunks.insert(chunk.seq, chunk.data);
+                            println!("{}: Data (Seq {})", chunk.id, chunk.seq);
+                        }
+                    }
+                    ChunkFlag::Fin => {
+                        let mut active_transfers = self.transfers.lock().await;
+                        if let Some(mut transfer) = active_transfers.remove(&chunk.id) {
+                            drop(active_transfers);
+
+                            let mut sequences: Vec<usize> =
+                                transfer.chunks.keys().copied().collect();
+                            sequences.sort();
+
+                            let mut final_data = Vec::new();
+                            for seq in sequences {
+                                if let Some(mut chunk_data) = transfer.chunks.remove(&seq) {
+                                    final_data.append(&mut chunk_data);
+                                }
+                            }
+
+                            let mut file = fs::OpenOptions::new()
+                                .write(true)
+                                .create(true)
+                                .open(&transfer.filename)
+                                .await
+                                .unwrap();
+
+                            file.write_all(&final_data).await.unwrap();
+                            println!("{}: Fin (Saved {} bytes)", chunk.id, final_data.len());
+                        }
+                    }
+                }
 
                 let txt: Vec<String> = vec![chunk.seq.to_string()];
+
                 let rdata = RData::TXT(TXT::new(txt));
                 let record = Record::from_rdata(qname.into(), 60, rdata);
                 header.set_response_code(ResponseCode::NoError);

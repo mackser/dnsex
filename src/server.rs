@@ -1,6 +1,8 @@
 use hickory_server::ServerFuture;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::net::{TcpListener, UdpSocket};
 
 use crate::error::DnsexError;
@@ -30,6 +32,7 @@ impl Server {
 
         let handler = DnsHandler {
             server: Arc::new(self),
+            transfers: Arc::new(Mutex::new(HashMap::new())),
         };
 
         let mut server = ServerFuture::new(handler);

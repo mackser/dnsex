@@ -68,6 +68,7 @@ impl Client {
             total_chunks, self.config.domain
         );
 
+        // init
         let init_fqdn = self.build_fqdn(
             &hex::encode(&payload.filename),
             total_chunks,

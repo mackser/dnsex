@@ -1,6 +1,5 @@
 # TODO List
 
-- Retransmission handling
 - Progress bar (client)
 - Base32 encoding
 - Encryption

@@ -49,6 +49,9 @@ enum Commands {
 
         #[arg(long, default_value_t = 100)]
         rate_limit: u64,
+
+        #[arg(long)]
+        progress: bool,
     },
 }
 
@@ -69,16 +72,17 @@ async fn main() -> Result<(), DnsexError> {
             message,
             file,
             rate_limit,
+            progress,
         } => {
             let payload = if let Some(msg) = message {
                 ExfilPayload {
-                    filename: "message.txt".to_string(),
+                    filename: "message.txt".into(),
                     data: msg.into_bytes(),
                 }
             } else if let Some(path) = file {
                 let path = Path::new(&path);
                 ExfilPayload {
-                    filename: path.file_name().unwrap().to_string_lossy().to_string(),
+                    filename: path.into(),
                     data: fs::read(&path).await?,
                 }
             } else {
@@ -97,6 +101,7 @@ async fn main() -> Result<(), DnsexError> {
                 resolver_ip: resolver,
                 port,
                 rate_limit_ms: rate_limit,
+                progress,
             };
 
             let client = Client::new(client_config);

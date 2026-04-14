@@ -1,3 +1,6 @@
+use crate::error::DnsexError;
+use crate::server::Server;
+use crate::utils;
 use async_trait::async_trait;
 use hickory_proto::op::{Header, ResponseCode};
 use hickory_proto::rr::{RData, Record, RecordType, rdata::TXT};
@@ -6,9 +9,6 @@ use hickory_server::{
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
 };
 use std::collections::HashMap;
-
-use crate::error::DnsexError;
-use crate::server::Server;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -33,11 +33,13 @@ impl Transfer {
     }
 }
 
-#[derive(Clone, Debug)]
+#[repr(u32)]
+#[derive(Clone, Debug, Copy)]
 pub enum ChunkFlag {
-    Init,
-    Data,
-    Fin,
+    Init = 1 << 0,
+    Data = 1 << 1,
+    Fin = 1 << 2,
+    Directory = 1 << 3,
 }
 
 #[derive(Clone, Debug)]
@@ -45,7 +47,13 @@ pub struct Chunk {
     pub data: Vec<u8>,
     pub seq: usize,
     pub id: String,
-    pub flag: ChunkFlag,
+    pub flags: u32,
+}
+
+impl Chunk {
+    pub fn has_flag(&self, flag: ChunkFlag) -> bool {
+        (self.flags & (flag as u32)) != 0
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -67,7 +75,7 @@ impl DnsHandler {
         let hex_data = parts.next()?;
         let seq_str = parts.next()?;
         let id = parts.next()?;
-        let flag_str = parts.next()?;
+        let flags_str = parts.next()?;
 
         if parts.next().is_some() {
             return None;
@@ -75,19 +83,48 @@ impl DnsHandler {
 
         let seq = seq_str.parse::<usize>().ok()?;
         let data = hex::decode(hex_data).ok()?;
-        let flag = match flag_str {
-            "i" => ChunkFlag::Init,
-            "d" => ChunkFlag::Data,
-            "f" => ChunkFlag::Fin,
-            _ => return None,
-        };
+        let flags = flags_str.parse::<u32>().ok()?;
 
         Some(Chunk {
             seq,
             data,
             id: id.to_string(),
-            flag,
+            flags,
         })
+    }
+
+    async fn save_transfer(&self, chunk: &Chunk) -> Result<(), DnsexError> {
+        if chunk.has_flag(ChunkFlag::Directory) {
+            self.save_transfer_to_dir(&chunk.id).await?;
+            return Ok(());
+        }
+
+        self.save_transfer_to_file(&chunk.id).await?;
+        Ok(())
+    }
+
+    async fn save_transfer_to_dir(&self, chunk_id: &str) -> Result<(), DnsexError> {
+        let mut active_transfers = self.transfers.lock().await;
+        let mut transfer = active_transfers.remove(chunk_id).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "Transfer not found")
+        })?;
+
+        drop(active_transfers);
+
+        let mut sequences: Vec<usize> = transfer.chunks.keys().copied().collect();
+        sequences.sort();
+
+        let mut final_data = Vec::new();
+        for seq in sequences {
+            if let Some(mut chunk_data) = transfer.chunks.remove(&seq) {
+                final_data.append(&mut chunk_data);
+            }
+        }
+
+        utils::decode_dir(&transfer.filename, final_data).await?;
+        println!("{}: Fin (Saved Directory)", chunk_id);
+
+        Ok(())
     }
 
     async fn save_transfer_to_file(&self, chunk_id: &str) -> Result<(), DnsexError> {
@@ -164,77 +201,73 @@ impl RequestHandler for DnsHandler {
 
         if record_type == RecordType::TXT {
             if let Some(chunk) = self.extract_chunk(&qname_str) {
-                match chunk.flag {
-                    ChunkFlag::Init => {
-                        let filename = String::from_utf8_lossy(&chunk.data);
-                        let transfer = Transfer {
-                            filename: filename.to_string(),
-                            total_chunks: chunk.seq,
-                            chunks: HashMap::new(),
-                        };
+                if chunk.has_flag(ChunkFlag::Init) {
+                    let filename = String::from_utf8_lossy(&chunk.data);
+                    let transfer = Transfer {
+                        filename: filename.to_string(),
+                        total_chunks: chunk.seq,
+                        chunks: HashMap::new(),
+                    };
 
-                        let mut active_transfers = self.transfers.lock().await;
-                        active_transfers.insert(chunk.id.clone(), transfer);
-                        println!("{}: Init", filename);
+                    let mut active_transfers = self.transfers.lock().await;
+                    active_transfers.insert(chunk.id.clone(), transfer);
+                    println!("{}: Init", filename);
+                } else if chunk.has_flag(ChunkFlag::Data) {
+                    let mut active_transfers = self.transfers.lock().await;
+                    if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
+                        transfer.chunks.insert(chunk.seq, chunk.data);
+                        println!("{}: Data (Seq {})", chunk.id, chunk.seq);
                     }
-                    ChunkFlag::Data => {
-                        let mut active_transfers = self.transfers.lock().await;
-                        if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
-                            transfer.chunks.insert(chunk.seq, chunk.data);
-                            println!("{}: Data (Seq {})", chunk.id, chunk.seq);
-                        }
-                    }
-                    ChunkFlag::Fin => {
-                        let (response_text, should_save) = {
-                            let active_transfers = self.transfers.lock().await;
-                            if let Some(transfer) = active_transfers.get(&chunk.id) {
-                                if !transfer.verify() {
-                                    let missing_str = transfer
-                                        .missing()
-                                        .iter()
-                                        .map(|m| m.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(",");
+                } else if chunk.has_flag(ChunkFlag::Fin) {
+                    let (response_text, should_save) = {
+                        let active_transfers = self.transfers.lock().await;
+                        if let Some(transfer) = active_transfers.get(&chunk.id) {
+                            if !transfer.verify() {
+                                let missing_str = transfer
+                                    .missing()
+                                    .iter()
+                                    .map(|m| m.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",");
 
-                                    (format!("MISSING:{}", missing_str), false)
-                                } else {
-                                    (String::from("OK"), true)
-                                }
+                                (format!("MISSING:{}", missing_str), false)
                             } else {
-                                (String::from("ERROR: Not Found"), false)
+                                (String::from("OK"), true)
                             }
-                        };
+                        } else {
+                            (String::from("ERROR: Not Found"), false)
+                        }
+                    };
 
-                        if should_save {
-                            if let Err(e) = self.save_transfer_to_file(&chunk.id).await {
-                                eprintln!("UNEXPECTED: Failed to save file {}: {}", chunk.id, e);
-                                header.set_response_code(ResponseCode::ServFail);
-                                let response = builder.build_no_records(header);
+                    if should_save {
+                        if let Err(e) = self.save_transfer(&chunk).await {
+                            eprintln!("UNEXPECTED: Failed to save {}: {}", chunk.id, e);
+                            header.set_response_code(ResponseCode::ServFail);
+                            let response = builder.build_no_records(header);
 
-                                match response_handle.send_response(response).await {
-                                    Ok(info) => return info,
-                                    Err(err) => {
-                                        eprintln!("Failed to send ServFail: {}", err);
-                                        return ResponseInfo::from(hickory_proto::op::Header::new());
-                                    }
+                            match response_handle.send_response(response).await {
+                                Ok(info) => return info,
+                                Err(err) => {
+                                    eprintln!("Failed to send ServFail: {}", err);
+                                    return ResponseInfo::from(hickory_proto::op::Header::new());
                                 }
                             }
                         }
-
-                        let rdata = RData::TXT(TXT::new(vec![response_text]));
-                        let record = Record::from_rdata(qname.into(), 60, rdata);
-                        header.set_response_code(ResponseCode::NoError);
-
-                        let response = builder.build(
-                            header,
-                            vec![&record].into_iter(),
-                            vec![].into_iter(),
-                            vec![].into_iter(),
-                            vec![].into_iter(),
-                        );
-
-                        return response_handle.send_response(response).await.unwrap();
                     }
+
+                    let rdata = RData::TXT(TXT::new(vec![response_text]));
+                    let record = Record::from_rdata(qname.into(), 60, rdata);
+                    header.set_response_code(ResponseCode::NoError);
+
+                    let response = builder.build(
+                        header,
+                        vec![&record].into_iter(),
+                        vec![].into_iter(),
+                        vec![].into_iter(),
+                        vec![].into_iter(),
+                    );
+
+                    return response_handle.send_response(response).await.unwrap();
                 }
 
                 let txt: Vec<String> = vec![chunk.seq.to_string()];

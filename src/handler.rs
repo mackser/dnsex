@@ -93,6 +93,16 @@ impl DnsHandler {
         })
     }
 
+    async fn remove_transfer(&self, chunk_id: &str) -> Result<Transfer, DnsexError> {
+        let mut active_transfers = self.transfers.lock().await;
+        let transfer = active_transfers.remove(chunk_id).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "Transfer not found")
+        })?;
+
+        drop(active_transfers);
+        Ok(transfer)
+    }
+
     async fn save_transfer(&self, chunk: &Chunk) -> Result<(), DnsexError> {
         if chunk.has_flag(ChunkFlag::Directory) {
             self.save_transfer_to_dir(&chunk.id).await?;
@@ -104,13 +114,7 @@ impl DnsHandler {
     }
 
     async fn save_transfer_to_dir(&self, chunk_id: &str) -> Result<(), DnsexError> {
-        let mut active_transfers = self.transfers.lock().await;
-        let mut transfer = active_transfers.remove(chunk_id).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "Transfer not found")
-        })?;
-
-        drop(active_transfers);
-
+        let mut transfer = self.remove_transfer(chunk_id).await?;
         let mut sequences: Vec<usize> = transfer.chunks.keys().copied().collect();
         sequences.sort();
 
@@ -128,13 +132,7 @@ impl DnsHandler {
     }
 
     async fn save_transfer_to_file(&self, chunk_id: &str) -> Result<(), DnsexError> {
-        let mut active_transfers = self.transfers.lock().await;
-        let mut transfer = active_transfers.remove(chunk_id).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "Transfer not found")
-        })?;
-
-        drop(active_transfers);
-
+        let mut transfer = self.remove_transfer(chunk_id).await?;
         let mut sequences: Vec<usize> = transfer.chunks.keys().copied().collect();
         sequences.sort();
 

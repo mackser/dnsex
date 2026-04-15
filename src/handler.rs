@@ -2,6 +2,7 @@ use crate::error::DnsexError;
 use crate::server::Server;
 use crate::utils;
 use async_trait::async_trait;
+use data_encoding::BASE32_NOPAD;
 use hickory_proto::op::{Header, ResponseCode};
 use hickory_proto::rr::{RData, Record, RecordType, rdata::TXT};
 use hickory_server::{
@@ -82,7 +83,9 @@ impl DnsHandler {
         }
 
         let seq = seq_str.parse::<usize>().ok()?;
-        let data = hex::decode(hex_data).ok()?;
+        let data = BASE32_NOPAD
+            .decode(hex_data.to_uppercase().as_bytes())
+            .ok()?;
         let flags = flags_str.parse::<u32>().ok()?;
 
         Some(Chunk {

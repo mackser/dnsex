@@ -28,9 +28,7 @@ impl Transfer {
     }
 
     pub fn missing(&self) -> Vec<usize> {
-        return (0..self.total_chunks)
-            .filter(|seq| !self.chunks.contains_key(seq))
-            .collect();
+        return (0..self.total_chunks).filter(|seq| !self.chunks.contains_key(seq)).collect();
     }
 }
 
@@ -83,9 +81,7 @@ impl DnsHandler {
         }
 
         let seq = seq_str.parse::<usize>().ok()?;
-        let data = BASE32_NOPAD
-            .decode(hex_data.to_uppercase().as_bytes())
-            .ok()?;
+        let data = BASE32_NOPAD.decode(hex_data.to_uppercase().as_bytes()).ok()?;
         let flags = flags_str.parse::<u32>().ok()?;
 
         Some(Chunk {
@@ -98,9 +94,9 @@ impl DnsHandler {
 
     async fn remove_transfer(&self, chunk_id: &str) -> Result<Transfer, DnsexError> {
         let mut active_transfers = self.transfers.lock().await;
-        let transfer = active_transfers.remove(chunk_id).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "Transfer not found")
-        })?;
+        let transfer = active_transfers
+            .remove(chunk_id)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Transfer not found"))?;
 
         drop(active_transfers);
         Ok(transfer)
@@ -146,11 +142,7 @@ impl DnsHandler {
             }
         }
 
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(&transfer.filename)
-            .await?;
+        let mut file = fs::OpenOptions::new().write(true).create(true).open(&transfer.filename).await?;
 
         file.write_all(&final_data).await?;
         println!("{}: Fin (Saved {} bytes)", chunk_id, final_data.len());
@@ -182,11 +174,7 @@ impl DnsHandler {
 
 #[async_trait]
 impl RequestHandler for DnsHandler {
-    async fn handle_request<R: ResponseHandler>(
-        &self,
-        request: &Request,
-        mut response_handle: R,
-    ) -> ResponseInfo {
+    async fn handle_request<R: ResponseHandler>(&self, request: &Request, mut response_handle: R) -> ResponseInfo {
         let query = request.query();
         let qname = query.name();
         let qname_str = qname.to_string().to_lowercase();
@@ -224,12 +212,7 @@ impl RequestHandler for DnsHandler {
                         let active_transfers = self.transfers.lock().await;
                         if let Some(transfer) = active_transfers.get(&chunk.id) {
                             if !transfer.verify() {
-                                let missing_str = transfer
-                                    .missing()
-                                    .iter()
-                                    .map(|m| m.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(",");
+                                let missing_str = transfer.missing().iter().map(|m| m.to_string()).collect::<Vec<_>>().join(",");
 
                                 (format!("MISSING:{}", missing_str), false)
                             } else {

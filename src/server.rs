@@ -2,8 +2,8 @@ use hickory_server::ServerFuture;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::net::{TcpListener, UdpSocket};
+use tokio::sync::Mutex;
 
 use crate::error::DnsexError;
 use crate::handler::DnsHandler;

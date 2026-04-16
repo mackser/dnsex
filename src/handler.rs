@@ -10,6 +10,7 @@ use hickory_server::{
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
 };
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -103,6 +104,8 @@ impl DnsHandler {
     }
 
     async fn save_transfer(&self, chunk: &Chunk) -> Result<(), DnsexError> {
+        fs::create_dir_all(&self.server.config.output).await?;
+
         if chunk.has_flag(ChunkFlag::Directory) {
             self.save_transfer_to_dir(&chunk.id).await?;
             return Ok(());
@@ -124,7 +127,8 @@ impl DnsHandler {
             }
         }
 
-        utils::decode_dir(&transfer.filename, final_data).await?;
+        let joined_path = Path::new(&self.server.config.output).join(&transfer.filename);
+        utils::decode_dir(&joined_path, final_data).await?;
         println!("{}: Fin (Saved Directory)", chunk_id);
 
         Ok(())
@@ -142,7 +146,8 @@ impl DnsHandler {
             }
         }
 
-        let mut file = fs::OpenOptions::new().write(true).create(true).open(&transfer.filename).await?;
+        let joined_path = Path::new(&self.server.config.output).join(&transfer.filename);
+        let mut file = fs::OpenOptions::new().write(true).create(true).open(&joined_path).await?;
 
         file.write_all(&final_data).await?;
         println!("{}: Fin (Saved {} bytes)", chunk_id, final_data.len());

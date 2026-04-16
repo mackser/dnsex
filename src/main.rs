@@ -30,6 +30,9 @@ enum Commands {
 
         #[arg(short, long, default_value_t = 8053)]
         port: u16,
+
+        #[arg(short, long, default_value = ".")]
+        output: String,
     },
 
     Client {
@@ -61,8 +64,13 @@ async fn main() -> Result<(), DnsexError> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Server { domain, bind, port } => {
-            let server_config = ServerConfig { domain, addr: bind, port };
+        Commands::Server { domain, bind, port, output } => {
+            let server_config = ServerConfig {
+                domain,
+                addr: bind,
+                port,
+                output,
+            };
 
             let server = Server::new(server_config);
             server.start().await?;

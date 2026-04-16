@@ -13,6 +13,7 @@ pub struct ServerConfig {
     pub domain: String,
     pub addr: String,
     pub port: u16,
+    pub output: String,
 }
 
 #[derive(Debug, Clone)]

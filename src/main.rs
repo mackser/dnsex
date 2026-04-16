@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use client::{Client, ClientConfig, ExfilPayload};
 use error::DnsexError;
-use server::Server;
+use server::{Server, ServerConfig};
 use std::path::Path;
 use tokio::fs;
 use tokio::io::{self, AsyncReadExt};
@@ -62,7 +62,9 @@ async fn main() -> Result<(), DnsexError> {
 
     match cli.command {
         Commands::Server { domain, bind, port } => {
-            let server = Server::new(domain, bind, port);
+            let server_config = ServerConfig { domain, addr: bind, port };
+
+            let server = Server::new(server_config);
             server.start().await?;
         }
 

@@ -9,26 +9,24 @@ use crate::error::DnsexError;
 use crate::handler::DnsHandler;
 
 #[derive(Debug, Clone)]
-pub struct Server {
+pub struct ServerConfig {
     pub domain: String,
     pub addr: String,
     pub port: u16,
 }
 
+#[derive(Debug, Clone)]
+pub struct Server {
+    pub config: ServerConfig,
+}
+
 impl Server {
-    pub fn new<T>(domain: T, addr: T, port: u16) -> Self
-    where
-        T: Into<String>,
-    {
-        Self {
-            domain: domain.into(),
-            addr: addr.into(),
-            port,
-        }
+    pub fn new(config: ServerConfig) -> Self {
+        Self { config }
     }
 
     pub async fn start(self) -> Result<(), DnsexError> {
-        let addr: SocketAddr = format!("{}:{}", self.addr, self.port).parse()?;
+        let addr: SocketAddr = format!("{}:{}", self.config.addr, self.config.port).parse()?;
 
         let handler = DnsHandler {
             server: Arc::new(self),

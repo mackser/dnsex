@@ -64,7 +64,7 @@ pub struct DnsHandler {
 impl DnsHandler {
     fn extract_chunk(&self, qname: &str) -> Option<Chunk> {
         let qname = qname.to_lowercase();
-        let mut base_domain = self.server.domain.to_lowercase();
+        let mut base_domain = self.server.config.domain.to_lowercase();
         if !base_domain.ends_with('.') {
             base_domain.push('.');
         }
@@ -183,7 +183,7 @@ impl RequestHandler for DnsHandler {
         let builder = MessageResponseBuilder::from_message_request(request);
         let mut header = Header::response_from_request(request.header());
 
-        let expected_suffix = format!("{}.", self.server.domain);
+        let expected_suffix = format!("{}.", self.server.config.domain);
         if !qname_str.ends_with(&expected_suffix) {
             return self.respond_refused(response_handle, builder, header).await;
         }

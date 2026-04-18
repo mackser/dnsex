@@ -5,7 +5,7 @@ use hickory_client::client::{AsyncClient, ClientHandle};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::udp::UdpClientStream;
 use rand::Rng;
-use std::io::{self, Write};
+use std::io::Write;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use tokio::net::UdpSocket as TokioUdpSocket;
@@ -95,12 +95,8 @@ impl Client {
 
             if self.config.progress {
                 let progress: f32 = (((seq + 1) as f32 / total_chunks as f32) * 100.0) as f32;
-                let mut out = io::stdout();
-
-                let status = format!("[{:.2}% {}/{} {}] {}", progress, seq + 1, total_chunks, filename, data_fqdn);
-                let _ = out.write_all(b"\x1b[2K\x1b[1G");
-                let _ = out.write_all(status.as_bytes());
-                let _ = out.flush();
+                print!("\x1b[1G[{:.2}% {}/{} {}] {}", progress, seq + 1, total_chunks, filename, data_fqdn);
+                let _ = std::io::stdout().flush();
             }
 
             self.send_query(client, &data_fqdn).await?;

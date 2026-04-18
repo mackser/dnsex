@@ -180,13 +180,11 @@ impl Client {
         let response = client.query(domain_name, DNSClass::IN, RecordType::TXT).await?;
         let mut responses: Vec<String> = Vec::new();
 
-        if !response.answers().is_empty() {
-            for answer in response.answers() {
-                if let Some(RData::TXT(txt)) = answer.data() {
-                    for bytes in txt.iter() {
-                        if let Ok(text) = std::str::from_utf8(bytes) {
-                            responses.push(text.to_string());
-                        }
+        for answer in response.answers() {
+            if let Some(RData::TXT(txt)) = answer.data() {
+                for bytes in txt.iter() {
+                    if let Ok(text) = std::str::from_utf8(bytes) {
+                        responses.push(text.to_string());
                     }
                 }
             }

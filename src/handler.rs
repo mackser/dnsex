@@ -39,7 +39,6 @@ pub enum ChunkFlag {
     Init = 1 << 0,
     Data = 1 << 1,
     Fin = 1 << 2,
-    Directory = 1 << 3,
 }
 
 #[derive(Clone, Debug)]
@@ -105,18 +104,7 @@ impl DnsHandler {
 
     async fn save_transfer(&self, chunk: &Chunk) -> Result<(), DnsexError> {
         fs::create_dir_all(&self.server.config.output).await?;
-
-        if chunk.has_flag(ChunkFlag::Directory) {
-            self.save_transfer_to_dir(&chunk.id).await?;
-            return Ok(());
-        }
-
-        self.save_transfer_to_file(&chunk.id).await?;
-        Ok(())
-    }
-
-    async fn save_transfer_to_dir(&self, chunk_id: &str) -> Result<(), DnsexError> {
-        let mut transfer = self.remove_transfer(chunk_id).await?;
+        let mut transfer = self.remove_transfer(&chunk.id).await?;
         let mut sequences: Vec<usize> = transfer.chunks.keys().copied().collect();
         sequences.sort();
 
@@ -128,29 +116,14 @@ impl DnsHandler {
         }
 
         let joined_path = Path::new(&self.server.config.output).join(&transfer.filename);
-        utils::decode_dir(&joined_path, final_data).await?;
-        println!("{}: Fin (Saved Directory)", chunk_id);
-
-        Ok(())
-    }
-
-    async fn save_transfer_to_file(&self, chunk_id: &str) -> Result<(), DnsexError> {
-        let mut transfer = self.remove_transfer(chunk_id).await?;
-        let mut sequences: Vec<usize> = transfer.chunks.keys().copied().collect();
-        sequences.sort();
-
-        let mut final_data = Vec::new();
-        for seq in sequences {
-            if let Some(mut chunk_data) = transfer.chunks.remove(&seq) {
-                final_data.append(&mut chunk_data);
-            }
+        if let Some(parent) = joined_path.parent() {
+            let _ = fs::create_dir_all(parent).await?;
         }
 
-        let joined_path = Path::new(&self.server.config.output).join(&transfer.filename);
         let mut file = fs::OpenOptions::new().write(true).create(true).open(&joined_path).await?;
 
         file.write_all(&final_data).await?;
-        println!("{}: Fin (Saved {} bytes)", chunk_id, final_data.len());
+        println!("{}: Fin (Saved {} bytes)", chunk.id, final_data.len());
 
         Ok(())
     }

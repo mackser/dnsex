@@ -60,14 +60,11 @@ impl Client {
     }
 
     async fn send_init(&self, client: &mut AsyncClient, filename: &str, session_id: &str, total_chunks: usize) -> Result<(), DnsexError> {
-        let init_fqdn = self.build_fqdn(
-            &BASE32_NOPAD.encode(filename.as_bytes()),
-            total_chunks,
-            session_id,
-            ChunkFlag::Init as u32,
-        );
+        for (_, chunk) in filename.as_bytes().chunks(CHUNK_SIZE).enumerate() {
+            let init_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunk), total_chunks, session_id, ChunkFlag::Init as u32);
+            self.send_query(client, &init_fqdn).await?;
+        }
 
-        self.send_query(client, &init_fqdn).await?;
         Ok(())
     }
 

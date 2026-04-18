@@ -38,7 +38,6 @@ pub enum ChunkFlag {
     Init = 1 << 0,
     Data = 1 << 1,
     Fin = 1 << 2,
-    Compressed = 1 << 3,
 }
 
 #[derive(Clone, Debug)]
@@ -170,14 +169,19 @@ impl RequestHandler for DnsHandler {
             if let Some(chunk) = self.extract_chunk(&qname_str) {
                 if chunk.has_flag(ChunkFlag::Init) {
                     let filename = String::from_utf8_lossy(&chunk.data);
-                    let transfer = Transfer {
-                        filename: filename.to_string(),
-                        total_chunks: chunk.seq,
-                        chunks: HashMap::new(),
-                    };
-
                     let mut active_transfers = self.transfers.lock().await;
-                    active_transfers.insert(chunk.id.clone(), transfer);
+                    if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
+                        transfer.filename.push_str(&filename);
+                    } else {
+                        let transfer = Transfer {
+                            filename: filename.to_string(),
+                            total_chunks: chunk.seq,
+                            chunks: HashMap::new(),
+                        };
+
+                        active_transfers.insert(chunk.id.clone(), transfer);
+                    }
+
                     println!("{}: Init", filename);
                 } else if chunk.has_flag(ChunkFlag::Data) {
                     let mut active_transfers = self.transfers.lock().await;

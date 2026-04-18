@@ -182,7 +182,19 @@ impl RequestHandler for DnsHandler {
                         active_transfers.insert(chunk.id.clone(), transfer);
                     }
 
-                    println!("{}: Init", filename);
+                    let rdata = RData::TXT(TXT::new(vec!["OK".into()]));
+                    let record = Record::from_rdata(qname.into(), 60, rdata);
+                    header.set_response_code(ResponseCode::NoError);
+
+                    let response = builder.build(
+                        header,
+                        vec![&record].into_iter(),
+                        vec![].into_iter(),
+                        vec![].into_iter(),
+                        vec![].into_iter(),
+                    );
+
+                    return response_handle.send_response(response).await.unwrap();
                 } else if chunk.has_flag(ChunkFlag::Data) {
                     let mut active_transfers = self.transfers.lock().await;
                     if let Some(transfer) = active_transfers.get_mut(&chunk.id) {

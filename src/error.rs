@@ -22,4 +22,7 @@ pub enum DnsexError {
 
     #[error("Walkdir Error: {0}")]
     WalkdirError(#[from] walkdir::Error),
+
+    #[error("Transfer Error: {0}")]
+    TransferError(String),
 }

@@ -75,7 +75,7 @@ impl Client {
             }
 
             if !acked {
-                return Err(DnsexError::ConfigError("Failed to init transfer".into()));
+                return Err(DnsexError::TransferError("Failed to init transfer".into()));
             }
         }
 
@@ -131,7 +131,7 @@ impl Client {
             }
         }
 
-        Err(DnsexError::ConfigError("Failed to get valid FIN response from server".into()))
+        Err(DnsexError::TransferError("Failed to get valid FIN response from server".into()))
     }
 
     async fn send_missing(&self, client: &mut AsyncClient, data: &[u8], session_id: &str, missing: &[usize]) -> Result<(), DnsexError> {

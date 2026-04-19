@@ -27,7 +27,7 @@ enum Commands {
         #[arg(short, long, default_value = "0.0.0.0")]
         bind: String,
 
-        #[arg(short, long, default_value_t = 8053)]
+        #[arg(short, long, default_value_t = 53)]
         port: u16,
 
         #[arg(short, long, default_value = ".")]
@@ -41,7 +41,7 @@ enum Commands {
         #[arg(long, default_value = "8.8.8.8")]
         resolver: String,
 
-        #[arg(short, long, default_value_t = 8053)]
+        #[arg(short, long, default_value_t = 53)]
         port: u16,
 
         #[arg()]

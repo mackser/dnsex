@@ -56,6 +56,9 @@ enum Commands {
 
         #[arg(short, long)]
         recursive: bool,
+
+        #[arg(short = 'C', long)]
+        compressed: bool,
     },
 }
 
@@ -84,6 +87,7 @@ async fn main() -> Result<(), DnsexError> {
             rate_limit,
             progress,
             recursive,
+            compressed,
         } => {
             let client_config = ClientConfig {
                 domain,
@@ -91,6 +95,7 @@ async fn main() -> Result<(), DnsexError> {
                 port,
                 rate_limit_ms: rate_limit,
                 progress,
+                compressed,
             };
 
             let client = Client::new(client_config);

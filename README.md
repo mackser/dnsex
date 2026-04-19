@@ -37,6 +37,7 @@ dnsex client <PATH> --domain <DOMAIN> [OPTIONS]
   -p, --port <PORT>            The DNS port to target [default: 53]
       --rate-limit <LIMIT>     Delay between queries in ms [default: 100]
   -r  --recursive              Recursivly exfiltrate directory
+  -C  --compressed             Stream compresses data (zstd)
   -h, --help                   Print help
 ```
 

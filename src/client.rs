@@ -1,5 +1,6 @@
 use crate::error::DnsexError;
 use crate::handler::ChunkFlag;
+use async_compression::tokio::bufread::ZstdEncoder;
 use data_encoding::BASE32_NOPAD;
 use hickory_client::client::{AsyncClient, ClientHandle};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
@@ -9,7 +10,7 @@ use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 use tokio::net::UdpSocket as TokioUdpSocket;
 use tokio::time::{Duration, sleep};
 
@@ -31,6 +32,7 @@ pub struct ClientConfig {
     pub port: u16,
     pub rate_limit_ms: u64,
     pub progress: bool,
+    pub compressed: bool,
 }
 
 pub struct Client {
@@ -66,9 +68,15 @@ impl Client {
 
     async fn send_init(&self, client: &mut AsyncClient, filename: &str, session_id: &str, total_chunks: usize) -> Result<(), DnsexError> {
         for (_, chunk) in filename.as_bytes().chunks(CHUNK_SIZE).enumerate() {
-            let init_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunk), total_chunks, session_id, ChunkFlag::Init as u32);
+            let flags = if self.config.compressed {
+                ChunkFlag::Init as u32 | ChunkFlag::Compressed as u32
+            } else {
+                ChunkFlag::Init as u32
+            };
 
+            let init_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunk), total_chunks, session_id, flags);
             let mut acked = false;
+
             for _ in 0..MAX_INIT_RETRIES {
                 let responses = self.send_query(client, &init_fqdn).await?;
                 if responses.iter().any(|r| r == "OK") {
@@ -96,10 +104,16 @@ impl Client {
         let mut chunk_buffer = vec![0u8; CHUNK_SIZE];
         let mut seq = 0;
 
+        let mut reader: Box<dyn AsyncRead + Unpin + Send> = if self.config.compressed {
+            Box::new(ZstdEncoder::new(bufreader))
+        } else {
+            Box::new(bufreader)
+        };
+
         loop {
             let mut bytes_read = 0;
             while bytes_read < CHUNK_SIZE {
-                let n = bufreader.read(&mut chunk_buffer[bytes_read..]).await?;
+                let n = reader.read(&mut chunk_buffer[bytes_read..]).await?;
                 if n == 0 {
                     break;
                 }
@@ -152,7 +166,7 @@ impl Client {
             }
 
             if responses.iter().any(|r| r == "OK") {
-                break;
+                return Ok(());
             }
         }
 

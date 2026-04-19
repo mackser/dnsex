@@ -1,5 +1,6 @@
 use crate::error::DnsexError;
 use crate::server::Server;
+use async_compression::tokio::write::ZstdDecoder;
 use async_trait::async_trait;
 use data_encoding::BASE32_NOPAD;
 use hickory_proto::op::{Header, ResponseCode};
@@ -11,14 +12,13 @@ use hickory_server::{
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::fs::{self, File};
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::fs;
+use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 
-#[derive(Debug)]
 pub struct Transfer {
     filename: String,
-    bufwriter: BufWriter<File>,
+    writer: Box<dyn AsyncWrite + Unpin + Send>,
 }
 
 #[repr(u32)]
@@ -27,6 +27,7 @@ pub enum ChunkFlag {
     Init = 1 << 0,
     Data = 1 << 1,
     Fin = 1 << 2,
+    Compressed = 1 << 3,
 }
 
 #[derive(Clone, Debug)]
@@ -43,7 +44,7 @@ impl Chunk {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DnsHandler {
     pub server: Arc<Server>,
     pub transfers: Arc<Mutex<HashMap<String, Transfer>>>,
@@ -80,16 +81,20 @@ impl DnsHandler {
         })
     }
 
-    async fn create_bufwriter(&self, filename: &str) -> Result<BufWriter<File>, DnsexError> {
+    async fn create_writer(&self, filename: &str, compressed: bool) -> Result<Box<dyn AsyncWrite + Unpin + Send>, DnsexError> {
         let joined_path = Path::new(&self.server.config.output).join(&filename);
         if let Some(parent) = joined_path.parent() {
             let _ = fs::create_dir_all(parent).await?;
         }
 
         let file = fs::OpenOptions::new().write(true).create(true).open(&joined_path).await?;
-        let bufwriter = BufWriter::new(file);
+        let writer: Box<dyn AsyncWrite + Unpin + Send> = if compressed {
+            Box::new(ZstdDecoder::new(BufWriter::new(file)))
+        } else {
+            Box::new(BufWriter::new(file))
+        };
 
-        Ok(bufwriter)
+        Ok(writer)
     }
 
     async fn respond_error(
@@ -169,14 +174,15 @@ impl RequestHandler for DnsHandler {
                     if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
                         transfer.filename.push_str(&filename);
                     } else {
-                        let bufwriter = match self.create_bufwriter(&filename).await {
+                        let compressed = chunk.has_flag(ChunkFlag::Compressed);
+                        let writer = match self.create_writer(&filename, compressed).await {
                             Ok(b) => b,
                             _ => return self.respond_error(response_handle, builder, header, ResponseCode::ServFail).await,
                         };
 
                         let transfer = Transfer {
                             filename: filename.to_string(),
-                            bufwriter,
+                            writer,
                         };
 
                         active_transfers.insert(chunk.id.clone(), transfer);
@@ -186,12 +192,12 @@ impl RequestHandler for DnsHandler {
                 } else if chunk.has_flag(ChunkFlag::Data) {
                     let mut active_transfers = self.transfers.lock().await;
                     if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
-                        let _ = transfer.bufwriter.write_all(&chunk.data).await;
+                        let _ = transfer.writer.write_all(&chunk.data).await;
                     }
                 } else if chunk.has_flag(ChunkFlag::Fin) {
                     let mut active_transfers = self.transfers.lock().await;
                     let response_text = if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
-                        let _ = transfer.bufwriter.flush().await;
+                        let _ = transfer.writer.flush().await;
                         String::from("OK")
                     } else {
                         String::from("ERROR: Not Found")

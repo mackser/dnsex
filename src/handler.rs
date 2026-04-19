@@ -97,9 +97,9 @@ impl DnsHandler {
         Ok(writer)
     }
 
-    async fn respond_error(
+    async fn respond_error<R: ResponseHandler>(
         &self,
-        mut response_handle: impl ResponseHandler,
+        mut response_handle: R,
         builder: MessageResponseBuilder<'_>,
         mut header: Header,
         rcode: ResponseCode,
@@ -118,9 +118,9 @@ impl DnsHandler {
         }
     }
 
-    async fn respond_txt(
+    async fn respond_txt<R: ResponseHandler>(
         &self,
-        mut response_handle: impl ResponseHandler,
+        mut response_handle: R,
         builder: MessageResponseBuilder<'_>,
         mut header: Header,
         qname: Name,

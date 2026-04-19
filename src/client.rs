@@ -91,19 +91,25 @@ impl Client {
         total_chunks: usize,
     ) -> Result<(), DnsexError> {
         for (seq, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
-            let data_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunk), seq, session_id, ChunkFlag::Data as u32);
+            loop {
+                let data_fqdn = self.build_fqdn(&BASE32_NOPAD.encode(chunk), seq, session_id, ChunkFlag::Data as u32);
 
-            if self.config.progress {
-                let progress: f32 = (((seq + 1) as f32 / total_chunks as f32) * 100.0) as f32;
-                let mut out = io::stdout();
+                if self.config.progress {
+                    let progress: f32 = (((seq + 1) as f32 / total_chunks as f32) * 100.0) as f32;
+                    let mut out = io::stdout();
 
-                let status = format!("[{:.2}% {}/{} {}] {}", progress, seq + 1, total_chunks, filename, data_fqdn);
-                let _ = out.write_all(b"\x1b[2K\x1b[1G");
-                let _ = out.write_all(status.as_bytes());
-                let _ = out.flush();
+                    let status = format!("[{:.2}% {}/{} {}] {}", progress, seq + 1, total_chunks, filename, data_fqdn);
+                    let _ = out.write_all(b"\x1b[2K\x1b[1G");
+                    let _ = out.write_all(status.as_bytes());
+                    let _ = out.flush();
+                }
+
+                let seq_str = seq.to_string();
+                let response = self.send_query(client, &data_fqdn).await?;
+                if response.iter().any(|r| r == &seq_str) {
+                    break;
+                }
             }
-
-            self.send_query(client, &data_fqdn).await?;
         }
 
         println!();

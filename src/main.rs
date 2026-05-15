@@ -13,7 +13,7 @@ mod handler;
 mod server;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "DnsEx - Created by mackser <mackser@tuta.com>", long_about = None)]
+#[command(author, version, about = "DnsEx - Created by Mathias <mfred@tuta.com>", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
